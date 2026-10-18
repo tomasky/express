@@ -1,7 +1,0 @@
-import {
-  "kupas/express" @lib,
-}
-
-options(
-  "is-main": true,
-)

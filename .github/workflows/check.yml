@@ -15,6 +15,8 @@ jobs:
         run: |
           curl -fsSL https://cli.moonbitlang.com/install/unix | bash
           echo "$HOME/.moon/bin" >> $GITHUB_PATH
+      - name: Install native toolchain
+        run: sudo apt-get update && sudo apt-get install -y g++ zlib1g-dev
       - name: Check
         run: moon check
       - name: Build

@@ -11,16 +11,16 @@
 
 name = "kupas/express"
 
-version = "0.1.0"
+version = "0.1.1"
 
 readme = "README.mbt.md"
 
-repository = ""
+repository = "https://github.com/tomasky/express"
 
 license = "Apache-2.0"
 
-keywords = []
+keywords = [ "express", "http", "server", "uWebSockets", "native" ]
 
-preferred_target = "js"
+preferred_target = "native"
 
-description = ""
+description = "Express-like web framework for MoonBit, built on µWebSockets"

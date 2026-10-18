@@ -1,0 +1,28 @@
+import {
+  "moonbitlang/core/encoding/utf8",
+  "moonbitlang/core/json",
+}
+
+// `method` and `use` are the Express API names, kept on purpose.
+
+warnings = "-0035"
+
+supported_targets = "native"
+
+options(
+  // µWebSockets is C++ and header-only, uSockets is vendored C. The stub
+  // files carry their own relative includes and default to plain HTTP, so no
+  // extra compiler flags are needed here. Executable packages that link this
+  // library add `-lstdc++ -lz` (see example/main/moon.pkg).
+  "native-stub": [
+    "src/uws_shim.cpp",
+    "third_party/usockets/src/loop.c",
+    "third_party/usockets/src/context.c",
+    "third_party/usockets/src/socket.c",
+    "third_party/usockets/src/udp.c",
+    "third_party/usockets/src/bsd.c",
+    "third_party/usockets/src/quic.c",
+    "third_party/usockets/src/eventing/epoll_kqueue.c",
+    "third_party/usockets/src/crypto/openssl.c",
+  ],
+)

@@ -1,0 +1,137 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "kupas/express"
+
+// Values
+pub fn cors() -> (Req, Res, Next) -> Unit
+
+pub fn express() -> App
+
+pub fn express_json(limit? : Int) -> (Req, Res, Next) -> Unit
+
+pub fn express_raw(limit? : Int) -> (Req, Res, Next) -> Unit
+
+pub fn express_static(String) -> (Req, Res, Next) -> Unit
+
+pub fn express_text(limit? : Int) -> (Req, Res, Next) -> Unit
+
+pub fn express_urlencoded(limit? : Int) -> (Req, Res, Next) -> Unit
+
+pub fn logger() -> (Req, Res, Next) -> Unit
+
+pub fn make_pattern(String) -> PathPattern
+
+pub fn parse_param_names(String) -> Array[String]
+
+pub fn parse_query(String) -> Map[String, String]
+
+pub fn parse_urlencoded(String) -> Map[String, String]
+
+pub fn percent_decode(String) -> String
+
+pub fn percent_decode_path(String) -> String
+
+pub fn split_path(String) -> Array[String]
+
+pub fn status_text(Int) -> String
+
+// Errors
+
+// Types and methods
+pub struct App {
+  // private fields
+}
+pub fn App::all(Self, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn App::close(Self) -> Unit
+pub fn App::delete(Self, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn App::get(Self, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn App::get_setting(Self, String) -> String
+pub fn App::head(Self, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn App::listen(Self, Int, (Bool) -> Unit) -> Unit
+pub fn App::listen_async(Self, String, Int, (Bool) -> Unit) -> Unit
+pub fn App::listen_host(Self, String, Int, (Bool) -> Unit) -> Unit
+pub fn App::options(Self, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn App::patch(Self, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn App::post(Self, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn App::prepare(Self) -> Unit
+pub fn App::put(Self, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn App::route(Self, String, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn App::run(Self) -> Unit
+pub fn App::set(Self, String, String) -> Unit
+pub fn App::use(Self, (Req, Res, Next) -> Unit) -> Unit
+pub fn App::use_at(Self, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn App::use_error(Self, (String, Req, Res, Next) -> Unit) -> Unit
+pub fn App::use_error_at(Self, String, (String, Req, Res, Next) -> Unit) -> Unit
+
+pub struct Next {
+  // private fields
+}
+pub fn Next::fail(Self, String) -> Unit
+pub fn Next::proceed(Self) -> Unit
+pub fn Next::resume_with(Self, String?) -> Unit
+
+pub struct PathPattern {
+  // private fields
+}
+pub fn PathPattern::is_any(Self) -> Bool
+pub fn PathPattern::match_path(Self, String, Bool) -> Array[(String, String)]?
+
+pub struct Req {
+  // private fields
+}
+pub fn Req::body(Self) -> String
+pub fn Req::form(Self, String) -> String
+pub fn Req::form_map(Self) -> Map[String, String]
+pub fn Req::get(Self, String) -> String
+pub fn Req::has_param(Self, String) -> Bool
+pub fn Req::header(Self, String) -> String
+pub fn Req::http_method(Self) -> String
+pub fn Req::ip(Self) -> String
+pub fn Req::is_aborted(Self) -> Bool
+pub fn Req::json_body(Self) -> Json?
+pub fn Req::method(Self) -> String
+pub fn Req::param(Self, String) -> String
+pub fn Req::params(Self) -> Map[String, String]
+pub fn Req::path(Self) -> String
+pub fn Req::query(Self) -> String
+pub fn Req::query_map(Self) -> Map[String, String]
+pub fn Req::query_param(Self, String) -> String
+pub fn Req::raw_query(Self) -> String
+pub fn Req::set_body(Self, String) -> Unit
+pub fn Req::set_form(Self, Map[String, String]) -> Unit
+pub fn Req::set_json_body(Self, Json?) -> Unit
+
+pub struct Res {
+  // private fields
+}
+pub fn Res::header(Self, String) -> String
+pub fn Res::is_aborted(Self) -> Bool
+pub fn Res::is_ended(Self) -> Bool
+pub fn Res::json(Self, Json) -> Unit
+pub fn Res::json_string(Self, String) -> Unit
+pub fn Res::redirect(Self, String) -> Unit
+pub fn Res::send(Self, String) -> Unit
+pub fn Res::send_bytes(Self, Bytes) -> Unit
+pub fn Res::send_empty(Self) -> Unit
+pub fn Res::set(Self, String, String) -> Self
+pub fn Res::set_header(Self, String, String) -> Unit
+pub fn Res::status(Self, Int) -> Self
+pub fn Res::status_code(Self) -> Int
+pub fn Res::type_(Self, String) -> Self
+
+#external
+pub type UwsApp
+
+#external
+pub type UwsReq
+
+#external
+pub type UwsRes
+
+// Type aliases
+pub type ErrorMiddleware = (String, Req, Res, Next) -> Unit
+
+pub type Handler = (Req, Res, Next) -> Unit
+
+pub type Middleware = (Req, Res, Next) -> Unit
+
+// Traits
