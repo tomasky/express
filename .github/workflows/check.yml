@@ -10,11 +10,18 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Install MoonBit
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up MoonBit
         run: |
-          curl -fsSL https://cli.moonbitlang.com/install/unix | bash
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
           echo "$HOME/.moon/bin" >> $GITHUB_PATH
+
+      - name: Update MoonBit dependencies
+        run: |
+            moon version --all
+            moon update
       - name: Install native toolchain
         run: sudo apt-get update && sudo apt-get install -y g++ zlib1g-dev
       - name: Check
