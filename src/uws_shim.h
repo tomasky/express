@@ -24,6 +24,13 @@ typedef void (*uwb_abort_cb)(uint64_t request_id);
 #define UWB_BODY_OK 0
 #define UWB_BODY_TOO_LARGE 1
 
+/* TLS support */
+#ifdef MOONBIT_UWS_WITH_TLS
+#define UWB_HAVE_TLS 1
+#else
+#define UWB_HAVE_TLS 0
+#endif
+
 void uwb_set_callbacks(
     uwb_req_cb req_cb,
     uwb_body_cb body_cb,
@@ -69,6 +76,12 @@ moonbit_bytes_t uwb_req_header_value(int32_t index);
 
 /* --- response (usable asynchronously, e.g. from an onData callback) --- */
 void uwb_res_write_status(void *res, moonbit_bytes_t status, int32_t len);
+
+/* --- TLS callbacks --- */
+void uwb_tls_init(void);
+void uwb_tls_teardown(void);
+void uwb_tls_configure(void *ctx, const char *cert_file, const char *key_file, const char *ca_file);
+void uwb_tls_apply(void *res);
 void uwb_res_write_header(
     void *res,
     moonbit_bytes_t name,

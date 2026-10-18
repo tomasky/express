@@ -923,7 +923,16 @@ fn finalize(state : DispatchState, req : Req, res : Res) -> Unit {
       println("express: unhandled error: " + message)
       res.status(500).send("Internal Server Error")
     }
-    None =>
-      res.status(404).send("Cannot " + req.http_method() + " " + req.path())
+    None => {
+      // Auto-handle OPTIONS preflight on 404
+      if req.http_method() == "OPTIONS" {
+        res.status(200)
+          .set("Allow", "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD")
+          .set("Content-Type", "text/plain; charset=utf-8")
+          .send("")
+      } else {
+        res.status(404).send("Cannot " + req.http_method() + " " + req.path())
+      }
+    }
   }
 }

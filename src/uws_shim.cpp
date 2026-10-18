@@ -54,6 +54,12 @@ std::string g_url;
 std::string g_query;
 std::vector<std::pair<std::string, std::string>> g_headers;
 
+/* TLS state */
+#if UWB_HAVE_TLS
+  bool g_tls_enabled = false;
+  SSL_CTL *g_ssl = nullptr;
+#endif
+
 moonbit_bytes_t make_bytes(const char *data, size_t len) {
   auto *out = moonbit_make_bytes_raw(static_cast<int32_t>(len));
   if (len > 0) {
@@ -207,6 +213,45 @@ void uwb_res_on_aborted(void *res, uint64_t request_id) {
       g_abort_cb(request_id);
     }
   });
+}
+
+void uwb_tls_init(void) {
+#if UWB_HAVE_TLS
+  // Initialize OpenSSL
+  SSL_library_init();
+  SSL_load_error_strings();
+  OpenSSL_add_all_algorithms();
+#endif
+}
+
+void uwb_tls_teardown(void) {
+#if UWB_HAVE_TLS
+  // Cleanup OpenSSL
+  EVP_cleanup();
+  ERR_free_strings();
+#endif
+}
+
+void uwb_tls_configure(void *ctx, const char *cert_file, const char *key_file, const char *ca_file) {
+#if UWB_HAVE_TLS
+  // Configure TLS context with cert/key/CA
+  if (ctx) {
+    auto *ssl_ctx = static_cast<SSL_CTL *>(ctx);
+    if (cert_file) SSL_use_certificate_file(ssl_ctx, cert_file, SSL_FILETYPE_PEM);
+    if (key_file) SSL_use_private_key_file(ssl_ctx, key_file, SSL_FILETYPE_PEM);
+    if (ca_file) SSL_load_certs(ssl_ctx, ca_file, SSL_FILETYPE_PEM);
+  }
+#endif
+}
+
+void uwb_tls_apply(void *res) {
+#if UWB_HAVE_TLS
+  // Apply TLS to a response object
+  auto *http_res = static_cast<HttpResponse *>(res);
+  if (http_res) {
+    http_res->setSsl(true);
+  }
+#endif
 }
 
 void uwb_res_on_data(void *res, uint64_t request_id, int32_t limit) {
