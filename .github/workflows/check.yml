@@ -1,0 +1,23 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MoonBit
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix | bash
+          echo "$HOME/.moon/bin" >> $GITHUB_PATH
+      - name: Check
+        run: moon check
+      - name: Build
+        run: moon build
+      - name: Test
+        run: moon test
