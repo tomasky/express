@@ -15,10 +15,17 @@
 extern "C" {
 #endif
 
-/* Callbacks implemented on the MoonBit side and registered once at startup. */
-typedef void (*uwb_req_cb)(uint64_t app_id, void *res, void *req);
-typedef void (*uwb_body_cb)(uint64_t request_id, moonbit_bytes_t body, int32_t len, int32_t status);
-typedef void (*uwb_abort_cb)(uint64_t request_id);
+/* Callbacks implemented on the MoonBit side and registered once at startup.
+ * MoonBit FuncRef is a fat pointer {env, fn}. We pass FuncRef by value
+ * (two pointers) and call it by extracting env and fn. */
+typedef struct {
+  void* env;
+  void* fn;
+} MoonbitFuncRef;
+
+typedef MoonbitFuncRef uwb_req_cb;
+typedef MoonbitFuncRef uwb_body_cb;
+typedef MoonbitFuncRef uwb_abort_cb;
 
 /* status for uwb_body_cb */
 #define UWB_BODY_OK 0
@@ -53,9 +60,25 @@ void uwb_set_ws_callbacks(
 void uwb_app_ws(void *app, int32_t route_id, moonbit_bytes_t path, int32_t path_len);
 void uwb_ws_send(void *ws, moonbit_bytes_t data, int32_t len, int32_t opcode, int32_t compress);
 void uwb_ws_close(void *ws, int32_t code, moonbit_bytes_t message, int32_t msg_len);
+void uwb_ws_send_ssl(void *ws, moonbit_bytes_t data, int32_t len, int32_t opcode, int32_t compress);
+void uwb_ws_close_ssl(void *ws, int32_t code, moonbit_bytes_t message, int32_t msg_len);
 
 /* --- application --- */
 void *uwb_app_new(void);
+
+/* --- TLS options for uwb_app_new_ssl / uwb_app_listen_ssl --- */
+struct uwb_tls_options {
+    const char *cert_file;      /* PEM certificate file */
+    const char *key_file;       /* PEM private key file */
+    const char *passphrase;     /* key file passphrase (optional) */
+    const char *dh_params_file; /* DH params file (optional) */
+    const char *ca_file;        /* CA bundle file (optional) */
+    const char *ssl_ciphers;    /* cipher list override (optional) */
+};
+
+/* Creates a TLS-enabled app. Caller must provide valid cert/key paths. */
+void *uwb_app_new_ssl(const struct uwb_tls_options *options);
+
 void uwb_app_any(void *app, uint64_t app_id, moonbit_bytes_t path, int32_t path_len);
 int32_t uwb_app_listen(
     void *app,
@@ -63,6 +86,13 @@ int32_t uwb_app_listen(
     moonbit_bytes_t host,
     int32_t host_len,
     int32_t port);
+int32_t uwb_app_listen_ssl(
+    void *app,
+    uint64_t app_id,
+    moonbit_bytes_t host,
+    int32_t host_len,
+    int32_t port,
+    const struct uwb_tls_options *options);
 void uwb_app_run(void *app);
 void uwb_app_close(void *app);
 

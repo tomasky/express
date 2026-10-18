@@ -1,5 +1,6 @@
 ///|
 fn main {
+  println("Starting server...")
   let app = @lib.express()
 
   // Built-in middleware, mirroring Express.
@@ -9,9 +10,13 @@ fn main {
   app.use(@lib.express_urlencoded())
 
   // Routes.
-  app.get("/", fn(_req, res, _next) { res.send("Hello from MoonBit express!") })
+  app.get("/", fn(_req, res, _next) { 
+    println("Handler / called")
+    res.send("Hello from MoonBit express!") 
+  })
 
   app.get("/users/:id", fn(req, res, _next) {
+    println("Handler /users/:id called")
     let id = req.param("id")
     let tab = req.query_param("tab")
     res.json_string(

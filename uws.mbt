@@ -22,6 +22,17 @@ pub type UwsReq
 pub type UwsSocket
 
 ///|
+/// TLS options for creating an SSL-enabled app.
+pub struct UwsSslOptions {
+  cert_file : String
+  key_file : String
+  passphrase : String?
+  dh_params_file : String?
+  ca_file : String?
+  ssl_ciphers : String?
+}
+
+///|
 /// Converts a MoonBit string to the UTF-8 bytes used across the FFI.
 fn utf8_bytes(text : String) -> Bytes {
   @utf8.encode(text)
@@ -36,6 +47,8 @@ fn utf8_string(bytes : Bytes) -> String {
 // ---------- callbacks into MoonBit ----------
 
 ///|
+/// Registers the three C callbacks. Runs once at startup.
+/// Uses FuncRef so MoonBit passes fat pointers {env, fn}.
 extern "C" fn uwb_set_callbacks(
   on_request : FuncRef[(UInt64, UwsRes, UwsReq) -> Unit],
   on_body : FuncRef[(UInt64, Bytes, Int32, Int32) -> Unit],
@@ -46,6 +59,11 @@ extern "C" fn uwb_set_callbacks(
 
 ///|
 extern "C" fn uwb_app_new() -> UwsApp = "uwb_app_new"
+
+///|
+/// Creates a TLS-enabled app from the given SSL options.
+#borrow(options)
+extern "C" fn uwb_app_new_ssl(options : UwsSslOptions) -> UwsApp = "uwb_app_new_ssl"
 
 ///|
 #borrow(path)
@@ -65,6 +83,17 @@ extern "C" fn uwb_app_listen(
   host_len : Int32,
   port : Int32,
 ) -> Int32 = "uwb_app_listen"
+
+///|
+#borrow(host, options)
+extern "C" fn uwb_app_listen_ssl(
+  app : UwsApp,
+  app_id : UInt64,
+  host : Bytes,
+  host_len : Int32,
+  port : Int32,
+  options : UwsSslOptions,
+) -> Int32 = "uwb_app_listen_ssl"
 
 ///|
 extern "C" fn uwb_app_run(app : UwsApp) -> Unit = "uwb_app_run"
@@ -168,6 +197,25 @@ extern "C" fn uwb_ws_close(
   message : Bytes,
   msg_len : Int32,
 ) -> Unit = "uwb_ws_close"
+
+///|
+#borrow(data)
+extern "C" fn uwb_ws_send_ssl(
+  ws : UwsSocket,
+  data : Bytes,
+  len : Int32,
+  opcode : Int32,
+  compress : Int32,
+) -> Unit = "uwb_ws_send_ssl"
+
+///|
+#borrow(message)
+extern "C" fn uwb_ws_close_ssl(
+  ws : UwsSocket,
+  code : Int32,
+  message : Bytes,
+  msg_len : Int32,
+) -> Unit = "uwb_ws_close_ssl"
 
 // ---------- filesystem helpers ----------
 

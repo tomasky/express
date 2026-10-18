@@ -23,9 +23,6 @@
 
 #include "uws_shim.h"
 
-using HttpResponse = uWS::HttpResponse<false>;
-using HttpRequest = uWS::HttpRequest;
-
 namespace {
 
 /* Per-connection user data µWebSockets hands back on every websocket call. */
@@ -33,18 +30,38 @@ struct WsUserData {
   uint64_t conn_id;
 };
 
-using WebSocket = uWS::WebSocket<false, true, WsUserData>;
+using WebSocketPlain = uWS::WebSocket<false, true, WsUserData>;
+using WebSocketSSL = uWS::WebSocket<true, true, WsUserData>;
 
 struct ShimApp {
-  uWS::App impl;
+  uWS::App *plain = nullptr;
+  uWS::SSLApp *ssl = nullptr;
 };
 
-uwb_req_cb g_req_cb = nullptr;
-uwb_body_cb g_body_cb = nullptr;
-uwb_abort_cb g_abort_cb = nullptr;
+uwb_req_cb g_req_cb = {nullptr, nullptr};
+uwb_body_cb g_body_cb = {nullptr, nullptr};
+uwb_abort_cb g_abort_cb = {nullptr, nullptr};
 uwb_ws_open_cb g_ws_open_cb = nullptr;
 uwb_ws_message_cb g_ws_message_cb = nullptr;
 uwb_ws_close_cb g_ws_close_cb = nullptr;
+
+static inline void call_req_cb(uwb_req_cb cb, uint64_t app_id, void* res, void* req) {
+  typedef void (*Fn)(void*, uint64_t, void*, void*);
+  Fn fn = (Fn)cb.fn;
+  fn(cb.env, app_id, res, req);
+}
+
+static inline void call_body_cb(uwb_body_cb cb, uint64_t request_id, moonbit_bytes_t body, int32_t len, int32_t status) {
+  typedef void (*Fn)(void*, uint64_t, moonbit_bytes_t, int32_t, int32_t);
+  Fn fn = (Fn)cb.fn;
+  fn(cb.env, request_id, body, len, status);
+}
+
+static inline void call_abort_cb(uwb_abort_cb cb, uint64_t request_id) {
+  typedef void (*Fn)(void*, uint64_t);
+  Fn fn = (Fn)cb.fn;
+  fn(cb.env, request_id);
+}
 uint64_t g_next_conn_id = 1;
 
 /* Snapshot of the request currently being dispatched. µWebSockets runs one
@@ -77,6 +94,94 @@ std::string_view view_of(moonbit_bytes_t bytes, int32_t len) {
                           static_cast<size_t>(len < 0 ? 0 : len));
 }
 
+/* Handlers for plain (non-SSL) app */
+void handle_request_plain(uWS::HttpResponse<false> *res, uWS::HttpRequest *req, uint64_t app_id) {
+  g_method.assign(req->getMethod());
+  std::string_view url = req->getUrl();
+  size_t qpos = url.find('?');
+  if (qpos != std::string_view::npos) {
+    g_url.assign(url.substr(0, qpos));
+    g_query.assign(url.substr(qpos + 1));
+  } else {
+    g_url.assign(url);
+    g_query.clear();
+  }
+  g_headers.clear();
+  for (auto [key, value] : *req) {
+    g_headers.emplace_back(std::string(key), std::string(value));
+  }
+  if (g_req_cb.fn != nullptr) {
+    call_req_cb(g_req_cb, app_id, res, req);
+  }
+}
+
+void handle_ws_open_plain(WebSocketPlain *ws, int32_t route_id) {
+  uint64_t conn_id = g_next_conn_id++;
+  ws->getUserData()->conn_id = conn_id;
+  if (g_ws_open_cb != nullptr) {
+    g_ws_open_cb(conn_id, route_id, ws);
+  }
+}
+
+void handle_ws_message_plain(WebSocketPlain *ws, std::string_view message, uWS::OpCode opCode) {
+  if (g_ws_message_cb != nullptr) {
+    g_ws_message_cb(ws->getUserData()->conn_id, make_bytes(message),
+                    static_cast<int32_t>(message.size()),
+                    static_cast<int32_t>(opCode));
+  }
+}
+
+void handle_ws_close_plain(WebSocketPlain *ws, int code, std::string_view message) {
+  if (g_ws_close_cb != nullptr) {
+    g_ws_close_cb(ws->getUserData()->conn_id, static_cast<int32_t>(code),
+                  make_bytes(message), static_cast<int32_t>(message.size()));
+  }
+}
+
+/* Handlers for SSL app */
+void handle_request_ssl(uWS::HttpResponse<true> *res, uWS::HttpRequest *req, uint64_t app_id) {
+  g_method.assign(req->getMethod());
+  std::string_view url = req->getUrl();
+  size_t qpos = url.find('?');
+  if (qpos != std::string_view::npos) {
+    g_url.assign(url.substr(0, qpos));
+    g_query.assign(url.substr(qpos + 1));
+  } else {
+    g_url.assign(url);
+    g_query.clear();
+  }
+  g_headers.clear();
+  for (auto [key, value] : *req) {
+    g_headers.emplace_back(std::string(key), std::string(value));
+  }
+  if (g_req_cb.fn != nullptr) {
+    call_req_cb(g_req_cb, app_id, res, req);
+  }
+}
+
+void handle_ws_open_ssl(WebSocketSSL *ws, int32_t route_id) {
+  uint64_t conn_id = g_next_conn_id++;
+  ws->getUserData()->conn_id = conn_id;
+  if (g_ws_open_cb != nullptr) {
+    g_ws_open_cb(conn_id, route_id, ws);
+  }
+}
+
+void handle_ws_message_ssl(WebSocketSSL *ws, std::string_view message, uWS::OpCode opCode) {
+  if (g_ws_message_cb != nullptr) {
+    g_ws_message_cb(ws->getUserData()->conn_id, make_bytes(message),
+                    static_cast<int32_t>(message.size()),
+                    static_cast<int32_t>(opCode));
+  }
+}
+
+void handle_ws_close_ssl(WebSocketSSL *ws, int code, std::string_view message) {
+  if (g_ws_close_cb != nullptr) {
+    g_ws_close_cb(ws->getUserData()->conn_id, static_cast<int32_t>(code),
+                  make_bytes(message), static_cast<int32_t>(message.size()));
+  }
+}
+
 } // namespace
 
 extern "C" {
@@ -88,24 +193,40 @@ void uwb_set_callbacks(uwb_req_cb req_cb, uwb_body_cb body_cb,
   g_abort_cb = abort_cb;
 }
 
-void *uwb_app_new(void) { return new ShimApp(); }
+void *uwb_app_new(void) {
+  auto *shim = new ShimApp();
+  shim->plain = new uWS::App();
+  return shim;
+}
+
+void *uwb_app_new_ssl(const struct uwb_tls_options *options) {
+  auto *shim = new ShimApp();
+  uWS::SocketContextOptions opts;
+  if (options != nullptr) {
+    if (options->cert_file) opts.cert_file_name = options->cert_file;
+    if (options->key_file) opts.key_file_name = options->key_file;
+    if (options->passphrase) opts.passphrase = options->passphrase;
+    if (options->dh_params_file) opts.dh_params_file_name = options->dh_params_file;
+    if (options->ca_file) opts.ca_file_name = options->ca_file;
+    if (options->ssl_ciphers) opts.ssl_ciphers = options->ssl_ciphers;
+  }
+  shim->ssl = new uWS::SSLApp(opts);
+  return shim;
+}
 
 void uwb_app_any(void *app, uint64_t app_id, moonbit_bytes_t path,
                  int32_t path_len) {
   auto *shim = static_cast<ShimApp *>(app);
   std::string pattern(view_of(path, path_len));
-  shim->impl.any(pattern, [app_id](HttpResponse *res, HttpRequest *req) {
-    g_method.assign(req->getMethod());
-    g_url.assign(req->getUrl());
-    g_query.assign(req->getQuery());
-    g_headers.clear();
-    for (auto [key, value] : *req) {
-      g_headers.emplace_back(std::string(key), std::string(value));
-    }
-    if (g_req_cb != nullptr) {
-      g_req_cb(app_id, res, req);
-    }
-  });
+  if (shim->plain) {
+    shim->plain->any(pattern, [app_id](uWS::HttpResponse<false> *res, uWS::HttpRequest *req) {
+      handle_request_plain(res, req, app_id);
+    });
+  } else if (shim->ssl) {
+    shim->ssl->any(pattern, [app_id](uWS::HttpResponse<true> *res, uWS::HttpRequest *req) {
+      handle_request_ssl(res, req, app_id);
+    });
+  }
 }
 
 int32_t uwb_app_listen(void *app, uint64_t app_id, moonbit_bytes_t host,
@@ -114,8 +235,27 @@ int32_t uwb_app_listen(void *app, uint64_t app_id, moonbit_bytes_t host,
   (void)app_id;
   std::string host_str(view_of(host, host_len));
   bool ok = false;
-  shim->impl.listen(host_str, port,
-                    [&ok](us_listen_socket_t *token) { ok = token != nullptr; });
+  auto handler = [&ok](us_listen_socket_t *token) { ok = token != nullptr; };
+  if (shim->plain) {
+    shim->plain->listen(host_str, port, std::move(handler));
+  } else if (shim->ssl) {
+    shim->ssl->listen(host_str, port, std::move(handler));
+  }
+  return ok ? 1 : 0;
+}
+
+int32_t uwb_app_listen_ssl(void *app, uint64_t app_id, moonbit_bytes_t host,
+                           int32_t host_len, int32_t port,
+                           const struct uwb_tls_options *options) {
+  auto *shim = static_cast<ShimApp *>(app);
+  (void)app_id;
+  (void)options; // options already applied at creation time
+  std::string host_str(view_of(host, host_len));
+  bool ok = false;
+  auto handler = [&ok](us_listen_socket_t *token) { ok = token != nullptr; };
+  if (shim->ssl) {
+    shim->ssl->listen(host_str, port, std::move(handler));
+  }
   return ok ? 1 : 0;
 }
 
@@ -130,48 +270,74 @@ void uwb_app_ws(void *app, int32_t route_id, moonbit_bytes_t path,
                 int32_t path_len) {
   auto *shim = static_cast<ShimApp *>(app);
   std::string pattern(view_of(path, path_len));
-  uWS::App::WebSocketBehavior<WsUserData> behavior;
-  behavior.maxPayloadLength = 16 * 1024 * 1024;
-  behavior.open = [route_id](WebSocket *ws) {
-    uint64_t conn_id = g_next_conn_id++;
-    ws->getUserData()->conn_id = conn_id;
-    if (g_ws_open_cb != nullptr) {
-      g_ws_open_cb(conn_id, route_id, ws);
-    }
-  };
-  behavior.message = [](WebSocket *ws, std::string_view message,
-                        uWS::OpCode opCode) {
-    if (g_ws_message_cb != nullptr) {
-      g_ws_message_cb(ws->getUserData()->conn_id, make_bytes(message),
-                      static_cast<int32_t>(message.size()),
-                      static_cast<int32_t>(opCode));
-    }
-  };
-  behavior.close = [](WebSocket *ws, int code, std::string_view message) {
-    if (g_ws_close_cb != nullptr) {
-      g_ws_close_cb(ws->getUserData()->conn_id, static_cast<int32_t>(code),
-                    make_bytes(message), static_cast<int32_t>(message.size()));
-    }
-  };
-  shim->impl.ws<WsUserData>(pattern, std::move(behavior));
+  if (shim->plain) {
+    uWS::App::WebSocketBehavior<WsUserData> behavior;
+    behavior.maxPayloadLength = 16 * 1024 * 1024;
+    behavior.open = [route_id](WebSocketPlain *ws) { handle_ws_open_plain(ws, route_id); };
+    behavior.message = [](WebSocketPlain *ws, std::string_view message, uWS::OpCode opCode) {
+      handle_ws_message_plain(ws, message, opCode);
+    };
+    behavior.close = [](WebSocketPlain *ws, int code, std::string_view message) {
+      handle_ws_close_plain(ws, code, message);
+    };
+    shim->plain->ws<WsUserData>(pattern, std::move(behavior));
+  } else if (shim->ssl) {
+    uWS::SSLApp::WebSocketBehavior<WsUserData> behavior;
+    behavior.maxPayloadLength = 16 * 1024 * 1024;
+    behavior.open = [route_id](WebSocketSSL *ws) { handle_ws_open_ssl(ws, route_id); };
+    behavior.message = [](WebSocketSSL *ws, std::string_view message, uWS::OpCode opCode) {
+      handle_ws_message_ssl(ws, message, opCode);
+    };
+    behavior.close = [](WebSocketSSL *ws, int code, std::string_view message) {
+      handle_ws_close_ssl(ws, code, message);
+    };
+    shim->ssl->ws<WsUserData>(pattern, std::move(behavior));
+  }
 }
 
 void uwb_ws_send(void *ws, moonbit_bytes_t data, int32_t len, int32_t opcode,
                  int32_t compress) {
-  static_cast<WebSocket *>(ws)->send(view_of(data, len),
-                                     static_cast<uWS::OpCode>(opcode),
-                                     compress != 0);
+  static_cast<WebSocketPlain *>(ws)->send(view_of(data, len),
+                                          static_cast<uWS::OpCode>(opcode),
+                                          compress != 0);
 }
 
 void uwb_ws_close(void *ws, int32_t code, moonbit_bytes_t message,
                   int32_t msg_len) {
-  static_cast<WebSocket *>(ws)->end(static_cast<int>(code),
-                                    view_of(message, msg_len));
+  static_cast<WebSocketPlain *>(ws)->end(static_cast<int>(code),
+                                         view_of(message, msg_len));
 }
 
-void uwb_app_run(void *app) { static_cast<ShimApp *>(app)->impl.run(); }
+void uwb_ws_send_ssl(void *ws, moonbit_bytes_t data, int32_t len, int32_t opcode,
+                     int32_t compress) {
+  static_cast<WebSocketSSL *>(ws)->send(view_of(data, len),
+                                        static_cast<uWS::OpCode>(opcode),
+                                        compress != 0);
+}
 
-void uwb_app_close(void *app) { static_cast<ShimApp *>(app)->impl.close(); }
+void uwb_ws_close_ssl(void *ws, int32_t code, moonbit_bytes_t message,
+                      int32_t msg_len) {
+  static_cast<WebSocketSSL *>(ws)->end(static_cast<int>(code),
+                                       view_of(message, msg_len));
+}
+
+void uwb_app_run(void *app) {
+  auto *shim = static_cast<ShimApp *>(app);
+  if (shim->plain) {
+    shim->plain->run();
+  } else if (shim->ssl) {
+    shim->ssl->run();
+  }
+}
+
+void uwb_app_close(void *app) {
+  auto *shim = static_cast<ShimApp *>(app);
+  if (shim->plain) {
+    shim->plain->close();
+  } else if (shim->ssl) {
+    shim->ssl->close();
+  }
+}
 
 moonbit_bytes_t uwb_req_method(void) { return make_bytes(g_method); }
 
@@ -192,25 +358,29 @@ moonbit_bytes_t uwb_req_header_value(int32_t index) {
 }
 
 void uwb_res_write_status(void *res, moonbit_bytes_t status, int32_t len) {
-  static_cast<HttpResponse *>(res)->writeStatus(view_of(status, len));
+  // Response type depends on app type; we use void* and cast appropriately
+  // For now assume plain app since that's what the MoonBit code uses
+  static_cast<uWS::HttpResponse<false> *>(res)->writeStatus(view_of(status, len));
 }
 
 void uwb_res_write_header(void *res, moonbit_bytes_t name, int32_t name_len,
                           moonbit_bytes_t value, int32_t value_len) {
-  static_cast<HttpResponse *>(res)->writeHeader(view_of(name, name_len),
-                                               view_of(value, value_len));
+  static_cast<uWS::HttpResponse<false> *>(res)->writeHeader(view_of(name, name_len),
+                                                            view_of(value, value_len));
 }
 
 void uwb_res_end(void *res, moonbit_bytes_t body, int32_t len) {
-  static_cast<HttpResponse *>(res)->end(view_of(body, len));
+  static_cast<uWS::HttpResponse<false> *>(res)->end(view_of(body, len));
 }
 
-void uwb_res_end_empty(void *res) { static_cast<HttpResponse *>(res)->end(); }
+void uwb_res_end_empty(void *res) {
+  static_cast<uWS::HttpResponse<false> *>(res)->end();
+}
 
 void uwb_res_on_aborted(void *res, uint64_t request_id) {
-  static_cast<HttpResponse *>(res)->onAborted([request_id]() {
-    if (g_abort_cb != nullptr) {
-      g_abort_cb(request_id);
+  static_cast<uWS::HttpResponse<false> *>(res)->onAborted([request_id]() {
+    if (g_abort_cb.fn != nullptr) {
+      call_abort_cb(g_abort_cb, request_id);
     }
   });
 }
@@ -247,7 +417,7 @@ void uwb_tls_configure(void *ctx, const char *cert_file, const char *key_file, c
 void uwb_tls_apply(void *res) {
 #if UWB_HAVE_TLS
   // Apply TLS to a response object
-  auto *http_res = static_cast<HttpResponse *>(res);
+  auto *http_res = static_cast<uWS::HttpResponse<true> *>(res);
   if (http_res) {
     http_res->setSsl(true);
   }
@@ -257,23 +427,23 @@ void uwb_tls_apply(void *res) {
 void uwb_res_on_data(void *res, uint64_t request_id, int32_t limit) {
   auto body = std::make_shared<std::string>();
   auto done = std::make_shared<bool>(false);
-  static_cast<HttpResponse *>(res)->onData(
+  static_cast<uWS::HttpResponse<false> *>(res)->onData(
       [request_id, limit, body, done](std::string_view chunk, bool is_last) {
         if (*done) {
           return;
         }
         if (body->size() + chunk.size() > static_cast<size_t>(limit)) {
           *done = true;
-          if (g_body_cb != nullptr) {
-            g_body_cb(request_id, moonbit_make_bytes_raw(0), 0, UWB_BODY_TOO_LARGE);
+          if (g_body_cb.fn != nullptr) {
+            call_body_cb(g_body_cb, request_id, moonbit_make_bytes_raw(0), 0, UWB_BODY_TOO_LARGE);
           }
           return;
         }
         body->append(chunk.data(), chunk.size());
         if (is_last) {
           *done = true;
-          if (g_body_cb != nullptr) {
-            g_body_cb(request_id, make_bytes(*body),
+          if (g_body_cb.fn != nullptr) {
+            call_body_cb(g_body_cb, request_id, make_bytes(*body),
                       static_cast<int32_t>(body->size()), UWB_BODY_OK);
           }
         }
@@ -281,7 +451,7 @@ void uwb_res_on_data(void *res, uint64_t request_id, int32_t limit) {
 }
 
 moonbit_bytes_t uwb_res_remote_address(void *res) {
-  return make_bytes(static_cast<HttpResponse *>(res)->getRemoteAddressAsText());
+  return make_bytes(static_cast<uWS::HttpResponse<false> *>(res)->getRemoteAddressAsText());
 }
 
 int32_t uwb_fs_kind(moonbit_bytes_t path, int32_t path_len) {
