@@ -48,6 +48,7 @@ pub struct Req {
   priv mut body_text : String
   priv mut body_json : Json?
   priv mut body_form : Map[String, String]
+  priv cookies : Map[String, String]
   priv remote_ip : String
   priv mut aborted : Bool
 }
@@ -145,6 +146,20 @@ pub fn Req::form(self : Req, name : String) -> String {
 ///|
 pub fn Req::form_map(self : Req) -> Map[String, String] {
   self.body_form
+}
+
+///|
+/// Returns a request cookie value, or `""` when it is not present.
+pub fn Req::cookie(self : Req, name : String) -> String {
+  match self.cookies.get(name) {
+    Some(value) => value
+    None => ""
+  }
+}
+
+///|
+pub fn Req::cookies(self : Req) -> Map[String, String] {
+  self.cookies
 }
 
 ///|
@@ -324,6 +339,71 @@ pub fn Res::json_string(self : Res, raw : String) -> Unit {
 }
 
 ///|
+/// Appends a `Set-Cookie` header with `Path=/`.
+pub fn Res::cookie(self : Res, name : String, value : String) -> Res {
+  self.set_cookie(name, value, "/", -1, false)
+}
+
+///|
+/// Appends a `Set-Cookie` header. A negative `max_age` omits `Max-Age`.
+pub fn Res::cookie_with(
+  self : Res,
+  name : String,
+  value : String,
+  path? : String,
+  max_age? : Int32,
+  http_only? : Bool,
+) -> Res {
+  let path = match path {
+    Some(value) => value
+    None => "/"
+  }
+  let max_age = match max_age {
+    Some(value) => value
+    None => -1
+  }
+  let http_only = match http_only {
+    Some(value) => value
+    None => false
+  }
+  self.set_cookie(name, value, path, max_age, http_only)
+}
+
+///|
+/// Expires a cookie, mirroring Express `res.clearCookie`.
+pub fn Res::clear_cookie(self : Res, name : String) -> Res {
+  self.set_cookie(name, "", "/", 0, false)
+}
+
+///|
+fn Res::set_cookie(
+  self : Res,
+  name : String,
+  value : String,
+  path : String,
+  max_age : Int32,
+  http_only : Bool,
+) -> Res {
+  let sb = StringBuilder()
+  sb.write_string(name)
+  sb.write_string("=")
+  sb.write_string(percent_encode(value))
+  if path != "" {
+    sb.write_string("; Path=")
+    sb.write_string(path)
+  }
+  if max_age >= 0 {
+    sb.write_string("; Max-Age=")
+    sb.write_string(max_age.to_string())
+  }
+  if http_only {
+    sb.write_string("; HttpOnly")
+  }
+  self.headers.push(("Set-Cookie", sb.to_string()))
+  self
+}
+
+///|
 pub fn Res::redirect(self : Res, url : String) -> Unit {
   self
   .status(302)
@@ -407,6 +487,7 @@ pub struct App {
   priv id : UInt64
   priv uws : UwsApp
   priv layers : Array[Layer]
+  priv ws_routes : Array[(Int32, String)]
   priv settings : Map[String, String]
   priv mut prepared : Bool
 }
@@ -419,6 +500,7 @@ pub fn express() -> App {
     id: next_id(),
     uws: uwb_app_new(),
     layers: [],
+    ws_routes: [],
     settings: Map([]),
     prepared: false,
   }
@@ -528,6 +610,11 @@ pub fn App::prepare(self : App) -> Unit {
   g_apps.set(self.id, self)
   let pattern = utf8_bytes("/*")
   uwb_app_any(self.uws, self.id, pattern, pattern.length())
+  for route in self.ws_routes {
+    let route_id = route.0
+    let path = utf8_bytes(route.1)
+    uwb_app_ws(self.uws, route_id, path, path.length())
+  }
 }
 
 ///|
@@ -631,6 +718,7 @@ fn init_shim() -> Unit {
     uwb_handle_abort(request_id)
   }
   uwb_set_callbacks(on_request, on_body, on_abort)
+  init_websockets()
 }
 
 ///|
@@ -696,6 +784,10 @@ fn start_request(app : App, uws_res : UwsRes) -> Unit {
     )
     index = index + 1
   }
+  let cookie_header = match headers.get("cookie") {
+    Some(value) => value
+    None => ""
+  }
   let req = Req::{
     uws_res,
     headers,
@@ -707,6 +799,7 @@ fn start_request(app : App, uws_res : UwsRes) -> Unit {
     body_text: "",
     body_json: None,
     body_form: Map([]),
+    cookies: parse_cookies(cookie_header),
     remote_ip: utf8_string(uwb_res_remote_address(uws_res)),
     aborted: false,
   }

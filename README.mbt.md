@@ -93,18 +93,21 @@ Application:
 | `app.listen(port, cb)` / `app.listen_host(host, port, cb)` | `app.listen(...)` |
 | `app.listen_async(host, port, cb)` + `app.run()` | - |
 | `app.set(key, value)` / `app.get_setting(key)` | `app.set/get` |
+| `app.ws(path, @express.ws_behavior(...))` | `app.ws(path, { open, message, close })` |
 
 `app.listen` blocks in the µWebSockets event loop, the way a native server
 normally does; `listen_async` plus `run()` gives you back the thread.
 
 Request (`Req`): `method()`, `path()`, `param(name)`, `params()`,
 `query_param(name)`, `query_map()`, `raw_query()`, `header(name)` / `get(name)`,
-`body()`, `json_body()`, `form(name)`, `form_map()`, `ip()`, `is_aborted()`.
+`body()`, `json_body()`, `form(name)`, `form_map()`, `cookie(name)`,
+`cookies()`, `ip()`, `is_aborted()`.
 
 Response (`Res`): `status(code)`, `set(name, value)`, `header(name)`,
 `type_(content_type)`, `send(text)`, `send_bytes(bytes)`, `send_empty()`,
-`json(Json)`, `json_string(raw)`, `redirect(url)`, `is_ended()`,
-`is_aborted()`.
+`json(Json)`, `json_string(raw)`, `redirect(url)`, `cookie(name, value)`,
+`cookie_with(name, value, path?, max_age?, http_only?)`, `clear_cookie(name)`,
+`is_ended()`, `is_aborted()`.
 
 Middleware: a middleware is `(Req, Res, Next) -> Unit`; call `next.proceed()`
 to continue or `next.fail(message)` to jump to error middleware. A route
@@ -113,6 +116,27 @@ through to later routes like Express.
 
 Built-ins: `express_json()`, `express_urlencoded()`, `express_text()`,
 `express_raw()`, `express_static(dir)`, `cors()`, `logger()`.
+
+### WebSockets
+
+µWebSockets' websocket support is exposed directly - no `node:http` upgrade
+workaround, the frames never leave the native engine:
+
+```moonbit nocheck
+app.ws("/chat/:room", @express.ws_behavior(
+  open=fn(conn) { conn.send("welcome") },
+  message=fn(conn, message) {
+    match message {
+      @express.WsMessage::Text(text) => conn.send("echo:" + text)
+      @express.WsMessage::Binary(data) => conn.send_bytes(data)
+    }
+  },
+  close=fn(_conn, _code, _reason) { () },
+))
+```
+
+`WsConn` offers `id()`, `send(text)`, `send_bytes(bytes)`, `send_frame(bytes, opcode, compress)`
+and `close(code?, reason?)`. All three behavior callbacks are optional.
 
 Helpers exported for tests and custom routers: `make_pattern`,
 `PathPattern::match_path`, `split_path`, `parse_query`, `parse_urlencoded`,

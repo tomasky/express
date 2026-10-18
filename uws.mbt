@@ -18,6 +18,10 @@ pub type UwsRes
 pub type UwsReq
 
 ///|
+#external
+pub type UwsSocket
+
+///|
 /// Converts a MoonBit string to the UTF-8 bytes used across the FFI.
 fn utf8_bytes(text : String) -> Bytes {
   @utf8.encode(text)
@@ -127,6 +131,43 @@ extern "C" fn uwb_res_on_data(
 
 ///|
 extern "C" fn uwb_res_remote_address(res : UwsRes) -> Bytes = "uwb_res_remote_address"
+
+// ---------- websockets ----------
+
+///|
+extern "C" fn uwb_set_ws_callbacks(
+  on_open : FuncRef[(UInt64, Int32, UwsSocket) -> Unit],
+  on_message : FuncRef[(UInt64, Bytes, Int32, Int32) -> Unit],
+  on_close : FuncRef[(UInt64, Int32, Bytes, Int32) -> Unit],
+) -> Unit = "uwb_set_ws_callbacks"
+
+///|
+#borrow(path)
+extern "C" fn uwb_app_ws(
+  app : UwsApp,
+  route_id : Int32,
+  path : Bytes,
+  path_len : Int32,
+) -> Unit = "uwb_app_ws"
+
+///|
+#borrow(data)
+extern "C" fn uwb_ws_send(
+  ws : UwsSocket,
+  data : Bytes,
+  len : Int32,
+  opcode : Int32,
+  compress : Int32,
+) -> Unit = "uwb_ws_send"
+
+///|
+#borrow(message)
+extern "C" fn uwb_ws_close(
+  ws : UwsSocket,
+  code : Int32,
+  message : Bytes,
+  msg_len : Int32,
+) -> Unit = "uwb_ws_close"
 
 // ---------- filesystem helpers ----------
 

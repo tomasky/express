@@ -55,10 +55,33 @@ fn main {
 
   app.get("/redirect", fn(_req, res, _next) { res.redirect("/") })
 
+  app.get("/cookie", fn(_req, res, _next) {
+    res.cookie("theme", "dark blue").send("cookie set")
+  })
+
+  app.get("/whoami", fn(req, res, _next) {
+    res.send("theme=" + req.cookie("theme"))
+  })
+
   app.get("/headers", fn(req, res, _next) {
     let ua = req.header("user-agent")
     res.json_string("{\"user-agent\":\"" + ua + "\"}")
   })
+
+  // Native websockets, straight from µWebSockets.
+  app.ws(
+    "/ws",
+    @lib.ws_behavior(
+      open=fn(conn) { conn.send("welcome") },
+      message=fn(conn, message) {
+        match message {
+          @lib.WsMessage::Text(text) => conn.send("echo:" + text)
+          @lib.WsMessage::Binary(data) => conn.send_bytes(data)
+        }
+      },
+      close=fn(_conn, _code, _reason) { () },
+    ),
+  )
 
   // Static files fall through when no route matched above.
   app.use(@lib.express_static("./public"))

@@ -20,6 +20,8 @@ pub fn logger() -> (Req, Res, Next) -> Unit
 
 pub fn make_pattern(String) -> PathPattern
 
+pub fn parse_cookies(String) -> Map[String, String]
+
 pub fn parse_param_names(String) -> Array[String]
 
 pub fn parse_query(String) -> Map[String, String]
@@ -30,9 +32,13 @@ pub fn percent_decode(String) -> String
 
 pub fn percent_decode_path(String) -> String
 
+pub fn percent_encode(String) -> String
+
 pub fn split_path(String) -> Array[String]
 
 pub fn status_text(Int) -> String
+
+pub fn ws_behavior(open? : (WsConn) -> Unit, message? : (WsConn, WsMessage) -> Unit, close? : (WsConn, Int, String) -> Unit) -> WsBehavior
 
 // Errors
 
@@ -61,6 +67,7 @@ pub fn App::use(Self, (Req, Res, Next) -> Unit) -> Unit
 pub fn App::use_at(Self, String, (Req, Res, Next) -> Unit) -> Unit
 pub fn App::use_error(Self, (String, Req, Res, Next) -> Unit) -> Unit
 pub fn App::use_error_at(Self, String, (String, Req, Res, Next) -> Unit) -> Unit
+pub fn App::ws(Self, String, WsBehavior) -> Unit
 
 pub struct Next {
   // private fields
@@ -79,6 +86,8 @@ pub struct Req {
   // private fields
 }
 pub fn Req::body(Self) -> String
+pub fn Req::cookie(Self, String) -> String
+pub fn Req::cookies(Self) -> Map[String, String]
 pub fn Req::form(Self, String) -> String
 pub fn Req::form_map(Self) -> Map[String, String]
 pub fn Req::get(Self, String) -> String
@@ -103,6 +112,9 @@ pub fn Req::set_json_body(Self, Json?) -> Unit
 pub struct Res {
   // private fields
 }
+pub fn Res::clear_cookie(Self, String) -> Self
+pub fn Res::cookie(Self, String, String) -> Self
+pub fn Res::cookie_with(Self, String, String, path? : String, max_age? : Int, http_only? : Bool) -> Self
 pub fn Res::header(Self, String) -> String
 pub fn Res::is_aborted(Self) -> Bool
 pub fn Res::is_ended(Self) -> Bool
@@ -126,6 +138,29 @@ pub type UwsReq
 
 #external
 pub type UwsRes
+
+#external
+pub type UwsSocket
+
+pub struct WsBehavior {
+  open : ((WsConn) -> Unit)?
+  message : ((WsConn, WsMessage) -> Unit)?
+  close : ((WsConn, Int, String) -> Unit)?
+}
+
+pub struct WsConn {
+  // private fields
+}
+pub fn WsConn::close(Self, code? : Int, reason? : String) -> Unit
+pub fn WsConn::id(Self) -> UInt64
+pub fn WsConn::send(Self, String) -> Unit
+pub fn WsConn::send_bytes(Self, Bytes) -> Unit
+pub fn WsConn::send_frame(Self, Bytes, Int, Bool) -> Unit
+
+pub enum WsMessage {
+  Text(String)
+  Binary(Bytes)
+}
 
 // Type aliases
 pub type ErrorMiddleware = (String, Req, Res, Next) -> Unit

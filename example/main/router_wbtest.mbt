@@ -81,6 +81,16 @@ test "param names are reported in order" {
 }
 
 ///|
+test "cookie header parsing and encoding round trip" {
+  let cookies = @lib.parse_cookies("theme=dark%20blue; session=abc123; empty=")
+  assert_eq(cookies.get("theme").unwrap_or(""), "dark blue")
+  assert_eq(cookies.get("session").unwrap_or(""), "abc123")
+  assert_eq(cookies.get("empty").unwrap_or(""), "")
+  assert_eq(@lib.percent_encode("dark blue"), "dark%20blue")
+  assert_eq(@lib.percent_decode(@lib.percent_encode("a;b=c")), "a;b=c")
+}
+
+///|
 test "status text covers the framework status codes" {
   assert_eq(@lib.status_text(200), "OK")
   assert_eq(@lib.status_text(404), "Not Found")

@@ -29,6 +29,24 @@ void uwb_set_callbacks(
     uwb_body_cb body_cb,
     uwb_abort_cb abort_cb);
 
+/* --- websockets --- */
+typedef void (*uwb_ws_open_cb)(uint64_t conn_id, int32_t route_id, void *ws);
+typedef void (*uwb_ws_message_cb)(uint64_t conn_id, moonbit_bytes_t data, int32_t len, int32_t opcode);
+typedef void (*uwb_ws_close_cb)(uint64_t conn_id, int32_t code, moonbit_bytes_t message, int32_t msg_len);
+
+/* opcode values follow the websocket spec */
+#define UWB_WS_TEXT 1
+#define UWB_WS_BINARY 2
+
+void uwb_set_ws_callbacks(
+    uwb_ws_open_cb open_cb,
+    uwb_ws_message_cb message_cb,
+    uwb_ws_close_cb close_cb);
+
+void uwb_app_ws(void *app, int32_t route_id, moonbit_bytes_t path, int32_t path_len);
+void uwb_ws_send(void *ws, moonbit_bytes_t data, int32_t len, int32_t opcode, int32_t compress);
+void uwb_ws_close(void *ws, int32_t code, moonbit_bytes_t message, int32_t msg_len);
+
 /* --- application --- */
 void *uwb_app_new(void);
 void uwb_app_any(void *app, uint64_t app_id, moonbit_bytes_t path, int32_t path_len);

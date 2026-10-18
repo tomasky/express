@@ -28,6 +28,13 @@ using HttpRequest = uWS::HttpRequest;
 
 namespace {
 
+/* Per-connection user data µWebSockets hands back on every websocket call. */
+struct WsUserData {
+  uint64_t conn_id;
+};
+
+using WebSocket = uWS::WebSocket<false, true, WsUserData>;
+
 struct ShimApp {
   uWS::App impl;
 };
@@ -35,6 +42,10 @@ struct ShimApp {
 uwb_req_cb g_req_cb = nullptr;
 uwb_body_cb g_body_cb = nullptr;
 uwb_abort_cb g_abort_cb = nullptr;
+uwb_ws_open_cb g_ws_open_cb = nullptr;
+uwb_ws_message_cb g_ws_message_cb = nullptr;
+uwb_ws_close_cb g_ws_close_cb = nullptr;
+uint64_t g_next_conn_id = 1;
 
 /* Snapshot of the request currently being dispatched. µWebSockets runs one
  * handler at a time, so a single staging area is enough. */
@@ -100,6 +111,56 @@ int32_t uwb_app_listen(void *app, uint64_t app_id, moonbit_bytes_t host,
   shim->impl.listen(host_str, port,
                     [&ok](us_listen_socket_t *token) { ok = token != nullptr; });
   return ok ? 1 : 0;
+}
+
+void uwb_set_ws_callbacks(uwb_ws_open_cb open_cb, uwb_ws_message_cb message_cb,
+                          uwb_ws_close_cb close_cb) {
+  g_ws_open_cb = open_cb;
+  g_ws_message_cb = message_cb;
+  g_ws_close_cb = close_cb;
+}
+
+void uwb_app_ws(void *app, int32_t route_id, moonbit_bytes_t path,
+                int32_t path_len) {
+  auto *shim = static_cast<ShimApp *>(app);
+  std::string pattern(view_of(path, path_len));
+  uWS::App::WebSocketBehavior<WsUserData> behavior;
+  behavior.maxPayloadLength = 16 * 1024 * 1024;
+  behavior.open = [route_id](WebSocket *ws) {
+    uint64_t conn_id = g_next_conn_id++;
+    ws->getUserData()->conn_id = conn_id;
+    if (g_ws_open_cb != nullptr) {
+      g_ws_open_cb(conn_id, route_id, ws);
+    }
+  };
+  behavior.message = [](WebSocket *ws, std::string_view message,
+                        uWS::OpCode opCode) {
+    if (g_ws_message_cb != nullptr) {
+      g_ws_message_cb(ws->getUserData()->conn_id, make_bytes(message),
+                      static_cast<int32_t>(message.size()),
+                      static_cast<int32_t>(opCode));
+    }
+  };
+  behavior.close = [](WebSocket *ws, int code, std::string_view message) {
+    if (g_ws_close_cb != nullptr) {
+      g_ws_close_cb(ws->getUserData()->conn_id, static_cast<int32_t>(code),
+                    make_bytes(message), static_cast<int32_t>(message.size()));
+    }
+  };
+  shim->impl.ws<WsUserData>(pattern, std::move(behavior));
+}
+
+void uwb_ws_send(void *ws, moonbit_bytes_t data, int32_t len, int32_t opcode,
+                 int32_t compress) {
+  static_cast<WebSocket *>(ws)->send(view_of(data, len),
+                                     static_cast<uWS::OpCode>(opcode),
+                                     compress != 0);
+}
+
+void uwb_ws_close(void *ws, int32_t code, moonbit_bytes_t message,
+                  int32_t msg_len) {
+  static_cast<WebSocket *>(ws)->end(static_cast<int>(code),
+                                    view_of(message, msg_len));
 }
 
 void uwb_app_run(void *app) { static_cast<ShimApp *>(app)->impl.run(); }

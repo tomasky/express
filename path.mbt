@@ -62,6 +62,61 @@ fn hex_digit(v : Int32) -> Int32 {
 }
 
 ///|
+/// Percent-encodes a value for use in a query string or cookie, keeping the
+/// unreserved characters from RFC 3986 untouched.
+pub fn percent_encode(input : String) -> String {
+  let bytes = @utf8.encode(input)
+  let sb = StringBuilder()
+  let mut i = 0
+  while i < bytes.length() {
+    let b = bytes[i].to_int()
+    let safe = (b >= 48 && b <= 57) ||
+      (b >= 65 && b <= 90) ||
+      (b >= 97 && b <= 122) ||
+      b == 45 ||
+      b == 95 ||
+      b == 46 ||
+      b == 126
+    if safe {
+      sb.write_char(b.unsafe_to_char())
+    } else {
+      sb.write_string("%")
+      sb.write_char(hex_char(b / 16))
+      sb.write_char(hex_char(b % 16))
+    }
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+///|
+fn hex_char(value : Int32) -> Char {
+  if value < 10 {
+    (48 + value).unsafe_to_char()
+  } else {
+    (55 + value).unsafe_to_char()
+  }
+}
+
+///|
+/// Parses a `Cookie` request header (`a=1; b=hello%20world`) into a map.
+pub fn parse_cookies(raw : String) -> Map[String, String] {
+  let out : Map[String, String] = Map([])
+  for part in raw.split(";") {
+    let pair = part.to_owned().trim().to_owned()
+    if pair == "" {
+      continue
+    }
+    match pair.split_once("=") {
+      Some((name, value)) =>
+        out.set(name.to_owned(), percent_decode(value.to_owned()))
+      None => out.set(pair, "")
+    }
+  }
+  out
+}
+
+///|
 /// Parses a raw query string (`a=1&b=hello+world`) into a map.
 pub fn parse_query(raw : String) -> Map[String, String] {
   let out : Map[String, String] = Map([])
