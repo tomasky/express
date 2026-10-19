@@ -145,10 +145,145 @@ pub fn parse_urlencoded(raw : String) -> Map[String, String] {
 }
 
 ///|
+/// Node of the nested form tree built by `parse_urlencoded_nested`.
+priv enum FormNode {
+  FormLeaf(String)
+  FormList(Array[FormNode])
+  FormMap(Map[String, FormNode])
+}
+
+///|
+/// Parses an `application/x-www-form-urlencoded` body with bracketed names
+/// (`a[b]=1&a[]=2&a[0]=3`) into nested JSON, mirroring the `extended` mode of
+/// `express.urlencoded`.
+pub fn parse_urlencoded_nested(raw : String) -> Json {
+  let root : Map[String, FormNode] = Map([])
+  for part in raw.split("&") {
+    let pair = part.to_owned()
+    if pair == "" {
+      continue
+    }
+    let (raw_key, raw_value) = match pair.split_once("=") {
+      Some((key, value)) => (key.to_owned(), value.to_owned())
+      None => (pair, "")
+    }
+    let segments = form_key_segments(percent_decode(raw_key))
+    if segments.length() == 0 || segments[0] == "" {
+      continue
+    }
+    let head = segments[0]
+    if segments.length() == 1 {
+      root.set(head, FormLeaf(percent_decode(raw_value)))
+    } else {
+      root.set(
+        head,
+        form_insert(root.get(head), segments, 1, percent_decode(raw_value)),
+      )
+    }
+  }
+  form_node_to_json(FormMap(root))
+}
+
+///|
+/// Splits a bracketed form key: `a[b][c]` becomes `["a", "b", "c"]` and
+/// `a[]` becomes `["a", ""]`.
+fn form_key_segments(key : String) -> Array[String] {
+  let segments : Array[String] = []
+  let first = match key.find("[") {
+    Some(index) => index
+    None => key.length()
+  }
+  segments.push(key[:first].to_owned())
+  let mut rest = key[first:].to_owned()
+  while rest.has_prefix("[") {
+    match rest.find("]") {
+      Some(end) => {
+        segments.push(rest[1:end].to_owned())
+        rest = rest[end + 1:].to_owned()
+      }
+      None => break
+    }
+  }
+  segments
+}
+
+///|
+/// Inserts one value into the tree below `at`, creating lists for `[]` and
+/// numeric keys and maps for named keys.
+fn form_insert(
+  current : FormNode?,
+  segments : Array[String],
+  at : Int32,
+  value : String,
+) -> FormNode {
+  let key = segments[at]
+  let last = at == segments.length() - 1
+  if key == "" || is_numeric_key(key) {
+    let items = match current {
+      Some(FormList(items)) => items
+      _ => []
+    }
+    if last {
+      items.push(FormLeaf(value))
+    } else {
+      items.push(form_insert(None, segments, at + 1, value))
+    }
+    FormList(items)
+  } else {
+    let entries = match current {
+      Some(FormMap(entries)) => entries
+      _ => Map([])
+    }
+    if last {
+      entries.set(key, FormLeaf(value))
+    } else {
+      entries.set(key, form_insert(entries.get(key), segments, at + 1, value))
+    }
+    FormMap(entries)
+  }
+}
+
+///|
+fn is_numeric_key(key : String) -> Bool {
+  if key == "" {
+    return false
+  }
+  for ch in key {
+    let digit = ch.to_int() - 48
+    if digit < 0 || digit > 9 {
+      return false
+    }
+  }
+  true
+}
+
+///|
+fn form_node_to_json(node : FormNode) -> Json {
+  match node {
+    FormLeaf(value) => Json::string(value)
+    FormList(items) => {
+      let out : Array[Json] = []
+      for item in items {
+        out.push(form_node_to_json(item))
+      }
+      Json::array(out)
+    }
+    FormMap(entries) => {
+      let out : Map[String, Json] = Map([])
+      for pair in entries.iter() {
+        out.set(pair.0, form_node_to_json(pair.1))
+      }
+      Json::object(out)
+    }
+  }
+}
+
+///|
 /// A route pattern. Patterns are compiled once at registration time and
 /// matched in MoonBit, while the actual HTTP transport stays in µWebSockets.
 pub struct PathPattern {
   priv segments : Array[Segment]
+  priv source : String
 }
 
 ///|
@@ -175,7 +310,13 @@ pub fn make_pattern(path : String) -> PathPattern {
       segments.push(Fixed(segment))
     }
   }
-  { segments, }
+  { segments, source: path, }
+}
+
+///|
+/// The original pattern string, as used by `req.route.path`.
+pub fn PathPattern::source(self : PathPattern) -> String {
+  self.source
 }
 
 ///|
@@ -274,32 +415,66 @@ pub fn status_text(code : Int32) -> String {
   match code {
     100 => "Continue"
     101 => "Switching Protocols"
+    102 => "Processing"
+    103 => "Early Hints"
     200 => "OK"
     201 => "Created"
     202 => "Accepted"
+    203 => "Non-Authoritative Information"
     204 => "No Content"
+    205 => "Reset Content"
     206 => "Partial Content"
+    207 => "Multi-Status"
+    208 => "Already Reported"
+    226 => "IM Used"
+    300 => "Multiple Choices"
     301 => "Moved Permanently"
     302 => "Found"
     303 => "See Other"
     304 => "Not Modified"
+    305 => "Use Proxy"
     307 => "Temporary Redirect"
     308 => "Permanent Redirect"
     400 => "Bad Request"
     401 => "Unauthorized"
+    402 => "Payment Required"
     403 => "Forbidden"
     404 => "Not Found"
     405 => "Method Not Allowed"
+    406 => "Not Acceptable"
+    407 => "Proxy Authentication Required"
     408 => "Request Timeout"
     409 => "Conflict"
+    410 => "Gone"
+    411 => "Length Required"
+    412 => "Precondition Failed"
     413 => "Payload Too Large"
+    414 => "URI Too Long"
     415 => "Unsupported Media Type"
+    416 => "Range Not Satisfiable"
+    417 => "Expectation Failed"
+    418 => "I'm a Teapot"
+    421 => "Misdirected Request"
     422 => "Unprocessable Entity"
+    423 => "Locked"
+    424 => "Failed Dependency"
+    425 => "Too Early"
+    426 => "Upgrade Required"
+    428 => "Precondition Required"
     429 => "Too Many Requests"
+    431 => "Request Header Fields Too Large"
+    451 => "Unavailable For Legal Reasons"
     500 => "Internal Server Error"
     501 => "Not Implemented"
     502 => "Bad Gateway"
     503 => "Service Unavailable"
+    504 => "Gateway Timeout"
+    505 => "HTTP Version Not Supported"
+    506 => "Variant Also Negotiates"
+    507 => "Insufficient Storage"
+    508 => "Loop Detected"
+    510 => "Not Extended"
+    511 => "Network Authentication Required"
     _ => "Unknown"
   }
 }

@@ -1,11 +1,12 @@
 import {
+  "moonbitlang/core/encoding/base64",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/json",
 }
 
-// `method` and `use` are the Express API names, kept on purpose.
-
-warnings = "-0035"
+// Express API names that are reserved words in MoonBit (`method`, `use`) are
+// declared with a non-reserved name and re-exported through `#alias`, so the
+// package compiles without warning suppressions.
 
 supported_targets = "native"
 
@@ -17,9 +18,12 @@ options(
   //
   // Note: only `stub-cc-flags` may appear here — adding `cc-link-flags` to a
   // library package makes `moon build` treat it as an executable to link.
-  "link": {
+  link: {
     "native": {
-      "stub-cc-flags": "-DMOONBIT_UWS_WITH_TLS -DLIBUS_USE_OPENSSL",
+      // `-Wno-deprecated-declarations`: the vendored OpenSSL backend of
+      // uSockets still uses OpenSSL 1.x APIs (DH_free, PEM_read_DHparams)
+      // that OpenSSL 3 marks deprecated; we compile third-party code as-is.
+      "stub-cc-flags": "-DMOONBIT_UWS_WITH_TLS -DLIBUS_USE_OPENSSL -Wno-deprecated-declarations",
     },
   },
   "native-stub": [

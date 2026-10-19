@@ -42,16 +42,23 @@ fn main {
 
 ## Features
 
-- **Express-compatible routing** — `app.get/post/put/patch/delete/options/head/all(path, handler)`, `app.route(method, path, handler)`, `app.use(mw)` / `app.use_at(path, mw)`
+- **Express-compatible routing** — `app.get/post/put/patch/delete/options/head/all(path, handler)`, `app.add_route(method, path, handler)`, `app.route(path).get(...).post(...)` chainable builder, `app.use(mw)` / `app.use_at(path, mw)`
 - **Route parameters** — `:name` params, `*` and `*name` wildcards, `req.param(name)` / `req.params()`
-- **Middleware chain** — `(Req, Res, Next) -> Unit` with `next.proceed()` / `next.fail(msg)`
+- **Middleware chain** — `(Req, Res, Next) -> Unit` with `next.proceed()` / `next.fail(msg)` / `next.resume_with(err?)`
 - **Error middleware** — `app.use_error(mw)` / `app.use_error_at(path, mw)` with `(String, Req, Res, Next) -> Unit` signature
-- **Query & body parsing** — `req.query_param(name)` / `req.query_map()` / `req.raw_query()`, JSON / URL-encoded / text / raw body middleware
-- **Cookies** — `req.cookie(name)` / `req.cookies()`, `res.cookie(name, value)` / `res.cookie_with(...)` / `res.clear_cookie(name)`
-- **Static files** — `express_static(root)` with directory index resolution and path traversal protection
+- **Query & body parsing** — `req.query_param(name)` / `req.query_map()` / `req.raw_query()`, JSON / URL-encoded (flat or extended) / text / raw body middleware
+- **Cookies** — `req.cookie(name)` / `req.cookies()`, signed cookies (`req.signed_cookie`, `req.signed_cookies`, `res.cookie_with(..., signed=true)`), `res.cookie(name, value)` / `res.cookie_with(...)` / `res.clear_cookie(name)`
+- **Static files** — `express_static(root, options?)` with ETag, Last-Modified, 304, Range (206/416), directory index, dotfiles and fallthrough control
+- **Content negotiation** — `req.accepts/accepts_charsets/accepts_encodings/accepts_languages`, `res.format`, `res.type_`
+- **Conditional responses** — `req.fresh` / `req.stale`, weak ETags, `If-None-Match` / `If-Modified-Since` → 304
+- **Mounted routers** — `app.use_router(path, router)` / `router.use_router(path, router)` with prefix stripping, `base_url` accumulation and `merge_params`
+- **View rendering** — `app.engine(ext, fn)` / `app.set("view engine", ext)` / `res.render(view, locals?)` / `app.render(view, locals?)`
+- **Streaming** — `res.write` / `res.write_bytes` / `res.end_stream` / `res.flush_headers`
+- **Trust proxy** — `app.set("trust proxy", ...)` drives `req.ip` / `req.ips` / `req.protocol` / `req.secure` / `req.host` / `req.subdomains`
 - **Native WebSockets** — direct µWebSockets upgrade, no Node.js `http` workaround
 - **TLS / HTTPS** — `app.listen_tls(cert, key, port, cb)` and `listen_tls_host` / `listen_tls_async`, with full `UwsSslOptions` support
 - **CORS** — built-in permissive CORS middleware with preflight handling
+- **No `X-Powered-By`** — the framework never sends that header
 
 ## Requirements
 
@@ -104,11 +111,13 @@ moon test                   # router/query unit tests
 | --- | --- | --- |
 | `express()` | `express()` | Creates a new app |
 | `app.get/post/put/patch/delete/options/head/all(path, handler)` | `app.METHOD(path, handler)` | Route registration |
-| `app.route(method, path, handler)` | `app.route(path).METHOD(handler)` | Programmatic route method |
+| `app.add_route(method, path, handler)` | `app.METHOD(path, handler)` | Programmatic route registration (renamed from `route`) |
+| `app.route(path)` | `app.route(path)` | Chainable builder returning a `RouteBuilder` |
 | `app.use(mw)` | `app.use(mw)` | Global middleware |
 | `app.use_at(path, mw)` | `app.use(path, mw)` | Path-scoped middleware |
 | `app.use_error(mw)` | `app.use((err, req, res, next) => ...)` | Error middleware |
 | `app.use_error_at(path, mw)` | `app.use(path, (err, req, res, next) => ...)` | Path-scoped error middleware |
+| `app.use_router(path, router)` | `app.use(path, router)` | Mount a sub-router |
 | `app.listen(port, cb)` | `app.listen(port, cb)` | Blocks in event loop |
 | `app.listen_host(host, port, cb)` | `app.listen(port, host, cb)` | Specific host, blocks |
 | `app.listen_async(host, port, cb)` | — | Non-blocking; call `app.run()` after |
@@ -119,6 +128,10 @@ moon test                   # router/query unit tests
 | `app.run()` | — | Runs the event loop (after `listen_async`) |
 | `app.close()` | — | Closes all sockets, stops event loop |
 | `app.set(key, value)` / `app.get_setting(key)` | `app.set(key, value)` / `app.get(key)` | App settings |
+| `app.enable(name)` / `app.disable(name)` | `app.enable(name)` / `app.disable(name)` | Toggle boolean settings |
+| `app.enabled(name)` / `app.disabled(name)` | `app.enabled(name)` / `app.disabled(name)` | Read boolean settings |
+| `app.engine(ext, render)` | `app.engine(ext, callback)` | Register a view engine |
+| `app.render(view, locals?)` | `app.render(view, locals?, cb)` | Render a view through an engine |
 | `app.ws(path, behavior)` | `app.ws(path, { open, message, close })` | WebSocket route |
 | `app.param(name, callback)` | `app.param(name, callback)` | Param middleware |
 | `app.locals` | `app.locals` | App-scoped local variables |
@@ -129,25 +142,48 @@ moon test                   # router/query unit tests
 | --- | --- | --- |
 | `req.method()` / `req.http_method()` | `req.method` | HTTP method (uppercase) |
 | `req.path()` | `req.path` | URL path |
+| `req.original_url()` | `req.originalUrl` | URL before router mounting |
+| `req.base_url()` | `req.baseUrl` | Accumulated mount prefix |
+| `req.url()` | `req.url` | URL relative to the current mount |
 | `req.param(name)` | `req.params[name]` | Route parameter |
 | `req.params()` | `req.params` | All route parameters |
+| `req.has_param(name)` | — | Whether a param exists |
 | `req.query_param(name)` | `req.query[name]` | Parsed query parameter |
 | `req.query_map()` | `req.query` | All query parameters |
 | `req.raw_query()` / `req.query()` | `req.query` (raw) | Raw query string |
 | `req.header(name)` / `req.get(name)` | `req.get(name)` | Request header (case-insensitive) |
+| `req.xhr()` | `req.xhr` | Whether `X-Requested-With` is `XMLHttpRequest` |
 | `req.body()` | `req.body` | Raw body text |
+| `req.body_bytes()` | `req.body` (Buffer) | Raw body bytes |
 | `req.json_body()` | `req.body` (parsed) | Parsed JSON body |
 | `req.form(name)` | `req.body[name]` | Form field value |
 | `req.form_map()` | `req.body` | All form fields |
+| `req.form_json()` | `req.body` | Nested form body (`extended` mode) |
 | `req.cookie(name)` | `req.cookies[name]` | Cookie value |
 | `req.cookies()` | `req.cookies` | All cookies |
-| `req.ip()` | `req.ip` | Remote IP address |
-| `req.is_aborted()` | — | Whether the request was aborted |
-| `req.protocol` | `req.protocol` | Protocol (with TLS) |
-| `req.secure` | `req.secure` | Whether TLS is active |
-| `req.accepts(types)` | `req.accepts(types)` | Content negotiation |
+| `req.signed_cookie(name)` | `req.signedCookies[name]` | Verified signed cookie |
+| `req.signed_cookies()` | `req.signedCookies` | All verified signed cookies |
+| `req.ip()` | `req.ip` | Remote IP (trust-proxy aware) |
+| `req.ips()` | `req.ips` | IP chain from `X-Forwarded-For` |
+| `req.protocol()` | `req.protocol` | Protocol (trust-proxy aware) |
+| `req.secure()` | `req.secure` | Whether the request is TLS |
+| `req.host()` | `req.get('host')` | Host header (trust-proxy aware) |
+| `req.hostname()` | `req.hostname` | Host without port |
+| `req.subdomains()` | `req.subdomains` | Subdomain list |
+| `req.remote_port()` | — | Remote TCP port |
+| `req.route()` | `req.route` | The matched `RouteInfo` |
+| `req.app()` | `req.app` | The owning application |
+| `req.accepts(types)` | `req.accepts(types)` | Content negotiation (media) |
+| `req.accepts_charsets(types)` | `req.acceptsCharsets(types)` | Charset negotiation |
+| `req.accepts_encodings(types)` | `req.acceptsEncodings(types)` | Encoding negotiation |
+| `req.accepts_languages(types)` | `req.acceptsLanguages(types)` | Language negotiation |
+| `req.range(size)` | `req.range(size)` | Parse a `Range` header |
+| `req.fresh()` | `req.fresh` | Conditional request matches |
+| `req.stale()` | `req.stale` | Inverse of `fresh` |
 | `req.is(type)` | `req.is(type)` | Content-Type check |
+| `req.is_aborted()` | — | Whether the request was aborted |
 | `req.locals` | `req.locals` | Request-scoped local variables |
+| `req.setting(key)` | `req.app.get(key)` | Read an app setting |
 
 ### Response (`Res`)
 
@@ -155,22 +191,31 @@ moon test                   # router/query unit tests
 | --- | --- | --- |
 | `res.status(code)` | `res.status(code)` | Set status code |
 | `res.status_code()` | `res.statusCode` | Get status code |
+| `res.send_status(code)` | `res.sendStatus(code)` | Send status with its reason phrase |
 | `res.set(name, value)` | `res.set(field, value)` | Set response header |
 | `res.set_header(name, value)` | `res.setHeader(name, value)` | Alias for `set` |
-| `res.header(name)` | `res.get(name)` | Get response header |
-| `res.type_(content_type)` | `res.type(type)` | Set Content-Type |
+| `res.get(name)` | `res.get(name)` | Get response header |
+| `res.headers_sent()` | `res.headersSent` | Whether headers were flushed |
+| `res.type_(content_type)` | `res.type(type)` | Set Content-Type (normalised) |
 | `res.send(text)` | `res.send(text)` | Send text response |
 | `res.send_bytes(bytes)` | `res.send(Buffer)` | Send binary response |
 | `res.send_empty()` | `res.send()` | Send empty response |
 | `res.json(value)` | `res.json(value)` | Send JSON response |
 | `res.json_string(raw)` | — | Send pre-serialized JSON |
-| `res.redirect(url)` | `res.redirect(url)` | 302 redirect |
+| `res.jsonp(value)` | `res.jsonp(value)` | JSONP response |
+| `res.redirect(url, status?)` | `res.redirect(url, status?)` | Redirect (302 by default) |
+| `res.render(view, locals?)` | `res.render(view, locals?, cb)` | Render a view through an engine |
+| `res.format(handlers)` | `res.format(obj)` | Content-negotiated response |
 | `res.cookie(name, value)` | `res.cookie(name, value)` | Set cookie |
-| `res.cookie_with(name, value, path?, max_age?, http_only?)` | `res.cookie(name, value, options)` | Cookie with options |
-| `res.clear_cookie(name)` | `res.clearCookie(name)` | Expire cookie |
+| `res.cookie_with(name, value, path?, max_age?, http_only?, domain?, expires?, secure?, same_site?, signed?)` | `res.cookie(name, value, options)` | Cookie with options |
+| `res.clear_cookie(name, path?)` | `res.clearCookie(name, options?)` | Expire cookie |
+| `res.write(chunk)` | `res.write(chunk)` | Stream a text chunk |
+| `res.write_bytes(chunk)` | `res.write(chunk)` | Stream a binary chunk |
+| `res.end_stream()` | `res.end()` | End a streamed response |
+| `res.flush_headers()` | `res.flushHeaders()` | Flush headers without ending |
 | `res.is_ended()` | — | Whether response was sent |
 | `res.is_aborted()` | — | Whether response was aborted |
-| `res.sendFile(path)` | `res.sendFile(path)` | Send file with correct MIME type |
+| `res.send_file(path, options?)` | `res.sendFile(path, options?)` | Send file (ETag, Range, 304) |
 | `res.download(path, filename?)` | `res.download(path, filename?)` | Download file as attachment |
 | `res.attachment(filename?)` | `res.attachment(filename?)` | Set Content-Disposition |
 | `res.append(field, value)` | `res.append(field, value)` | Append response header |
@@ -200,10 +245,10 @@ fn(req, res, next) {
 | MoonBit | Express.js | Description |
 | --- | --- | --- |
 | `express_json(limit?)` | `express.json(limit?)` | Parse `application/json` bodies |
-| `express_urlencoded(limit?)` | `express.urlencoded({ extended: false })` | Parse form bodies |
+| `express_urlencoded(limit?, extended?)` | `express.urlencoded({ extended })` | Parse form bodies (flat or nested) |
 | `express_text(limit?)` | `express.text(limit?)` | Parse `text/*` bodies |
-| `express_raw(limit?)` | `express.raw(limit?)` | Alias for `express_text` |
-| `express_static(root)` | `express.static(root)` | Serve static files |
+| `express_raw(limit?)` | `express.raw(limit?)` | Parse raw bodies into bytes |
+| `express_static(root, options?)` | `express.static(root, options)` | Serve static files (ETag, Range, ...) |
 | `cors()` | `cors()` | Permissive CORS with preflight |
 | `logger()` | `morgan('dev')` | Minimal request logger |
 
@@ -295,8 +340,12 @@ moon run example/tls   # HTTPS demo on :8443
 ### Helpers exported for tests and custom routers
 
 `make_pattern`, `PathPattern::match_path`, `split_path`, `parse_query`,
-`parse_urlencoded`, `percent_decode`, `percent_decode_path`,
-`parse_param_names`, `status_text`.
+`parse_urlencoded`, `parse_urlencoded_nested`, `parse_range_header`,
+`percent_decode`, `percent_decode_path`, `percent_encode`, `parse_param_names`,
+`status_text`, `mime_by_extension`, `mime_type`, `format_http_date`,
+`parse_http_date`, `sha256_hex`, `sign_cookie`, `unsign_cookie`,
+`negotiate_media`, `negotiate_charsets`, `negotiate_encodings`,
+`negotiate_languages`.
 
 ## How it works
 
@@ -334,12 +383,22 @@ and their socket-write paths differ.
 - Body parsing is opt-in per middleware, exactly like `body-parser`.
 - `res.set()` replaces a header; use `res.append()` to add multi-value headers.
 - `req.params` is a `Map[String, String]`; use `req.has_param(name)` to check existence.
+- `X-Powered-By` is **never** sent.
+- `compression`, `session` and `multipart` handling are out of scope (they are
+  separate packages in the Express ecosystem); bring your own middleware.
+- `trust proxy` accepts `"true"`, a hop count, a comma-separated IP list or the
+  `loopback` / `linklocal` / `uniquelocal` presets. CIDR ranges are not parsed.
+- `express.static` does not support the `setHeaders` callback.
+- `Router` does not host WebSocket routes (`app.ws` is application-level only).
+- `RouteInfo.method` is exposed as `http_method()` (MoonBit reserves `method`).
 
 ## Tests
 
 `moon test` covers route matching (static, params, wildcard, prefixes, trailing
-slashes, case-insensitivity), query parsing/percent decoding, and the status-code
-table. The demo in `example/main` is also a manual integration test:
+slashes, case-insensitivity), query parsing/percent decoding, status codes, SHA-256
+and HMAC known-answer vectors, cookie signing, content negotiation, HTTP dates,
+Range parsing, nested URL-encoded bodies and MIME resolution. The demo in
+`example/main` is also a manual integration test:
 
 ```bash
 moon run example/main

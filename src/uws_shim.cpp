@@ -360,6 +360,16 @@ void uwb_res_end_empty(void *res, int32_t ssl) {
   }
 }
 
+int32_t uwb_res_write(void *res, int32_t ssl, moonbit_bytes_t data, int32_t len) {
+  bool ok;
+  if (ssl != 0) {
+    ok = static_cast<uWS::HttpResponse<true> *>(res)->write(view_of(data, len));
+  } else {
+    ok = static_cast<uWS::HttpResponse<false> *>(res)->write(view_of(data, len));
+  }
+  return ok ? 1 : 0;
+}
+
 void uwb_res_on_aborted(void *res, int32_t ssl, uint64_t request_id) {
   auto handler = [request_id]() {
     if (g_abort_cb != nullptr) {
@@ -410,6 +420,15 @@ moonbit_bytes_t uwb_res_remote_address(void *res, int32_t ssl) {
   return make_bytes(static_cast<uWS::HttpResponse<false> *>(res)->getRemoteAddressAsText());
 }
 
+int32_t uwb_res_remote_port(void *res, int32_t ssl) {
+  if (ssl != 0) {
+    auto *socket = static_cast<uWS::HttpResponse<true> *>(res)->getNativeHandle();
+    return static_cast<int32_t>(us_socket_remote_port(1, static_cast<struct us_socket_t *>(socket)));
+  }
+  auto *socket = static_cast<uWS::HttpResponse<false> *>(res)->getNativeHandle();
+  return static_cast<int32_t>(us_socket_remote_port(0, static_cast<struct us_socket_t *>(socket)));
+}
+
 int32_t uwb_fs_kind(moonbit_bytes_t path, int32_t path_len) {
   std::string file(view_of(path, path_len));
   struct stat info;
@@ -439,6 +458,15 @@ moonbit_bytes_t uwb_fs_read_file(moonbit_bytes_t path, int32_t path_len) {
   }
   std::fclose(handle);
   return make_bytes(data);
+}
+
+int64_t uwb_fs_mtime(moonbit_bytes_t path, int32_t path_len) {
+  std::string file(view_of(path, path_len));
+  struct stat info;
+  if (::stat(file.c_str(), &info) != 0) {
+    return -1;
+  }
+  return static_cast<int64_t>(info.st_mtime);
 }
 
 } // extern "C"

@@ -101,14 +101,20 @@ void uwb_res_write_header(
     int32_t value_len);
 void uwb_res_end(void *res, int32_t ssl, moonbit_bytes_t body, int32_t len);
 void uwb_res_end_empty(void *res, int32_t ssl);
+/* Streaming write after writeStatus/writeHeader. Returns 0 when the socket
+ * signals backpressure; the data is still buffered by the engine. */
+int32_t uwb_res_write(void *res, int32_t ssl, moonbit_bytes_t data, int32_t len);
 void uwb_res_on_aborted(void *res, int32_t ssl, uint64_t request_id);
 void uwb_res_on_data(void *res, int32_t ssl, uint64_t request_id, int32_t limit);
 moonbit_bytes_t uwb_res_remote_address(void *res, int32_t ssl);
+int32_t uwb_res_remote_port(void *res, int32_t ssl);
 
 /* --- filesystem helpers for express.static --- */
 /* kind: 0 = missing, 1 = regular file, 2 = directory */
 int32_t uwb_fs_kind(moonbit_bytes_t path, int32_t path_len);
 moonbit_bytes_t uwb_fs_read_file(moonbit_bytes_t path, int32_t path_len);
+/* Last modification time in seconds since the epoch, -1 when missing. */
+int64_t uwb_fs_mtime(moonbit_bytes_t path, int32_t path_len);
 
 #ifdef __cplusplus
 }

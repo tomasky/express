@@ -199,6 +199,15 @@ extern "C" fn uwb_res_end(
 extern "C" fn uwb_res_end_empty(res : UwsRes, ssl : Int32) -> Unit = "uwb_res_end_empty"
 
 ///|
+#borrow(data)
+extern "C" fn uwb_res_write(
+  res : UwsRes,
+  ssl : Int32,
+  data : Bytes,
+  len : Int32,
+) -> Int32 = "uwb_res_write"
+
+///|
 extern "C" fn uwb_res_on_aborted(
   res : UwsRes,
   ssl : Int32,
@@ -215,6 +224,9 @@ extern "C" fn uwb_res_on_data(
 
 ///|
 extern "C" fn uwb_res_remote_address(res : UwsRes, ssl : Int32) -> Bytes = "uwb_res_remote_address"
+
+///|
+extern "C" fn uwb_res_remote_port(res : UwsRes, ssl : Int32) -> Int32 = "uwb_res_remote_port"
 
 // ---------- websockets ----------
 
@@ -283,6 +295,10 @@ extern "C" fn uwb_fs_kind(path : Bytes, path_len : Int32) -> Int32 = "uwb_fs_kin
 extern "C" fn uwb_fs_read_file(path : Bytes, path_len : Int32) -> Bytes = "uwb_fs_read_file"
 
 ///|
+#borrow(path)
+extern "C" fn uwb_fs_mtime(path : Bytes, path_len : Int32) -> Int64 = "uwb_fs_mtime"
+
+///|
 /// `0` missing, `1` regular file, `2` directory.
 fn fs_kind(path : String) -> Int32 {
   let bytes = utf8_bytes(path)
@@ -293,6 +309,13 @@ fn fs_kind(path : String) -> Int32 {
 fn fs_read_file(path : String) -> Bytes {
   let bytes = utf8_bytes(path)
   uwb_fs_read_file(bytes, bytes.length())
+}
+
+///|
+/// Last modification time in seconds since the epoch, `-1` when missing.
+fn fs_mtime(path : String) -> Int64 {
+  let bytes = utf8_bytes(path)
+  uwb_fs_mtime(bytes, bytes.length())
 }
 
 ///|

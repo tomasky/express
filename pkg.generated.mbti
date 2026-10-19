@@ -2,6 +2,12 @@
 package "kupas/express"
 
 // Values
+pub fn base64_encode(Bytes) -> String
+
+pub fn bytes_to_hex(Bytes) -> String
+
+pub fn constant_time_equal(Bytes, Bytes) -> Bool
+
 pub fn cors() -> (Req, Res, Next) -> Unit
 
 pub fn dispatch_abort(UInt64) -> Unit
@@ -10,29 +16,55 @@ pub fn dispatch_body(UInt64, Bytes, Int, Int) -> Unit
 
 pub fn dispatch_request(UInt64, UwsRes, UwsReq) -> Unit
 
+pub fn escape_html(String) -> String
+
 pub fn express() -> App
 
 pub fn express_json(limit? : Int) -> (Req, Res, Next) -> Unit
 
 pub fn express_raw(limit? : Int) -> (Req, Res, Next) -> Unit
 
-pub fn express_static(String) -> (Req, Res, Next) -> Unit
+pub fn express_router() -> Router
+
+pub fn express_static(String, options? : FileOptions) -> (Req, Res, Next) -> Unit
 
 pub fn express_text(limit? : Int) -> (Req, Res, Next) -> Unit
 
-pub fn express_urlencoded(limit? : Int) -> (Req, Res, Next) -> Unit
+pub fn express_urlencoded(limit? : Int, extended? : Bool) -> (Req, Res, Next) -> Unit
+
+pub fn format_http_date(Int64) -> String
+
+pub fn hmac_sha256(Bytes, Bytes) -> Bytes
 
 pub fn logger() -> (Req, Res, Next) -> Unit
 
 pub fn make_pattern(String) -> PathPattern
 
+pub fn mime_by_extension(String) -> String
+
+pub fn mime_type(String) -> String
+
+pub fn negotiate_charsets(String, Array[String]) -> String
+
+pub fn negotiate_encodings(String, Array[String]) -> String
+
+pub fn negotiate_languages(String, Array[String]) -> String
+
+pub fn negotiate_media(String, Array[String]) -> String
+
 pub fn parse_cookies(String) -> Map[String, String]
+
+pub fn parse_http_date(String) -> Int64?
 
 pub fn parse_param_names(String) -> Array[String]
 
 pub fn parse_query(String) -> Map[String, String]
 
+pub fn parse_range_header(String, Int) -> RangeResult
+
 pub fn parse_urlencoded(String) -> Map[String, String]
+
+pub fn parse_urlencoded_nested(String) -> Json
 
 pub fn percent_decode(String) -> String
 
@@ -40,9 +72,17 @@ pub fn percent_decode_path(String) -> String
 
 pub fn percent_encode(String) -> String
 
+pub fn sha256_bytes(Bytes) -> Bytes
+
+pub fn sha256_hex(String) -> String
+
+pub fn sign_cookie(String, String) -> String
+
 pub fn split_path(String) -> Array[String]
 
 pub fn status_text(Int) -> String
+
+pub fn unsign_cookie(String, String) -> String?
 
 pub fn ws_behavior(open? : (WsConn) -> Unit, message? : (WsConn, WsMessage) -> Unit, close? : (WsConn, Int, String) -> Unit) -> WsBehavior
 
@@ -52,11 +92,17 @@ pub fn ws_behavior(open? : (WsConn) -> Unit, message? : (WsConn, WsMessage) -> U
 pub struct App {
   // private fields
 }
+pub fn App::add_route(Self, String, String, (Req, Res, Next) -> Unit) -> Unit
 pub fn App::all(Self, String, (Req, Res, Next) -> Unit) -> Unit
 pub fn App::close(Self) -> Unit
 pub fn App::delete(Self, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn App::disable(Self, String) -> Unit
+pub fn App::disabled(Self, String) -> Bool
+pub fn App::enable(Self, String) -> Unit
 pub fn App::enable_tls(Self, String, String) -> Unit
 pub fn App::enable_tls_with(Self, UwsSslOptions) -> Unit
+pub fn App::enabled(Self, String) -> Bool
+pub fn App::engine(Self, String, (String, String, Json) -> String) -> Unit
 pub fn App::get(Self, String, (Req, Res, Next) -> Unit) -> Unit
 pub fn App::get_setting(Self, String) -> String
 pub fn App::head(Self, String, (Req, Res, Next) -> Unit) -> Unit
@@ -73,19 +119,36 @@ pub fn App::patch(Self, String, (Req, Res, Next) -> Unit) -> Unit
 pub fn App::post(Self, String, (Req, Res, Next) -> Unit) -> Unit
 pub fn App::prepare(Self) -> Unit
 pub fn App::put(Self, String, (Req, Res, Next) -> Unit) -> Unit
-pub fn App::route(Self, String, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn App::render(Self, String, locals? : Json) -> String raise
+pub fn App::route(Self, String) -> RouteBuilder
 pub fn App::run(Self) -> Unit
 pub fn App::set(Self, String, String) -> Unit
-pub fn App::use(Self, (Req, Res, Next) -> Unit) -> Unit
 pub fn App::use_at(Self, String, (Req, Res, Next) -> Unit) -> Unit
 pub fn App::use_error(Self, (String, Req, Res, Next) -> Unit) -> Unit
 pub fn App::use_error_at(Self, String, (String, Req, Res, Next) -> Unit) -> Unit
+#alias(use)
+pub fn App::use_middleware(Self, (Req, Res, Next) -> Unit) -> Unit
+pub fn App::use_router(Self, String, Router) -> Unit
 pub fn App::ws(Self, String, WsBehavior) -> Unit
+
+pub struct FileOptions {
+  dotfiles : String
+  index : String
+  etag : Bool
+  last_modified : Bool
+  max_age : Int
+  immutable : Bool
+  fallthrough : Bool
+  extensions : Array[String]
+  redirect : Bool
+}
+pub fn FileOptions::default() -> Self
 
 pub struct Next {
   // private fields
 }
 pub fn Next::fail(Self, String) -> Unit
+pub fn Next::fail_status(Self, Int, String) -> Unit
 pub fn Next::proceed(Self) -> Unit
 pub fn Next::resume_with(Self, String?) -> Unit
 
@@ -94,26 +157,46 @@ pub struct PathPattern {
 }
 pub fn PathPattern::is_any(Self) -> Bool
 pub fn PathPattern::match_path(Self, String, Bool) -> Array[(String, String)]?
+pub fn PathPattern::source(Self) -> String
+
+pub enum RangeResult {
+  NoRange
+  Malformed
+  Unsatisfiable
+  Ranges(Array[(Int, Int)])
+}
 
 pub struct Req {
   // private fields
 }
 pub fn Req::accepts(Self, Array[String]) -> String
+pub fn Req::accepts_charsets(Self, Array[String]) -> String
+pub fn Req::accepts_encodings(Self, Array[String]) -> String
+pub fn Req::accepts_languages(Self, Array[String]) -> String
+pub fn Req::app(Self) -> App
+pub fn Req::base_url(Self) -> String
 pub fn Req::body(Self) -> String
+pub fn Req::body_bytes(Self) -> Bytes
 pub fn Req::content_type_is(Self, String) -> String
 pub fn Req::cookie(Self, String) -> String
 pub fn Req::cookies(Self) -> Map[String, String]
 pub fn Req::form(Self, String) -> String
+pub fn Req::form_json(Self) -> Json?
 pub fn Req::form_map(Self) -> Map[String, String]
+pub fn Req::fresh(Self) -> Bool
 pub fn Req::get(Self, String) -> String
 pub fn Req::has_param(Self, String) -> Bool
 pub fn Req::header(Self, String) -> String
+pub fn Req::host(Self) -> String
+pub fn Req::hostname(Self) -> String
+#alias(method)
 pub fn Req::http_method(Self) -> String
 pub fn Req::ip(Self) -> String
+pub fn Req::ips(Self) -> Array[String]
 pub fn Req::is_aborted(Self) -> Bool
 pub fn Req::json_body(Self) -> Json?
 pub fn Req::locals(Self) -> Map[String, String]
-pub fn Req::method(Self) -> String
+pub fn Req::original_url(Self) -> String
 pub fn Req::param(Self, String) -> String
 pub fn Req::params(Self) -> Map[String, String]
 pub fn Req::path(Self) -> String
@@ -121,40 +204,103 @@ pub fn Req::protocol(Self) -> String
 pub fn Req::query(Self) -> String
 pub fn Req::query_map(Self) -> Map[String, String]
 pub fn Req::query_param(Self, String) -> String
+pub fn Req::range(Self, Int) -> RangeResult
 pub fn Req::raw_query(Self) -> String
+pub fn Req::remote_port(Self) -> Int
+pub fn Req::route(Self) -> RouteInfo?
 pub fn Req::secure(Self) -> Bool
 pub fn Req::set_body(Self, String) -> Unit
+pub fn Req::set_body_bytes(Self, Bytes) -> Unit
 pub fn Req::set_form(Self, Map[String, String]) -> Unit
+pub fn Req::set_form_json(Self, Json?) -> Unit
 pub fn Req::set_json_body(Self, Json?) -> Unit
+pub fn Req::signed_cookie(Self, String) -> String
+pub fn Req::signed_cookies(Self) -> Map[String, String]
+pub fn Req::stale(Self) -> Bool
+pub fn Req::subdomains(Self) -> Array[String]
+pub fn Req::subdomains_with(Self, String) -> Array[String]
+pub fn Req::url(Self) -> String
+pub fn Req::xhr(Self) -> Bool
 
 pub struct Res {
   // private fields
 }
 pub fn Res::append(Self, String, String) -> Self
 pub fn Res::attachment(Self, filename? : String) -> Self
-pub fn Res::clear_cookie(Self, String) -> Self
+pub fn Res::clear_cookie(Self, String, path? : String) -> Self
 pub fn Res::cookie(Self, String, String) -> Self
-pub fn Res::cookie_with(Self, String, String, path? : String, max_age? : Int, http_only? : Bool) -> Self
-pub fn Res::download(Self, String, filename? : String) -> Unit
+pub fn Res::cookie_with(Self, String, String, path? : String, max_age? : Int, http_only? : Bool, domain? : String, expires? : String, secure? : Bool, same_site? : String, signed? : Bool) -> Self
+pub fn Res::download(Self, String, filename? : String, options? : FileOptions) -> Unit
+pub fn Res::end_stream(Self) -> Unit
+pub fn Res::flush_headers(Self) -> Unit
+pub fn Res::format(Self, Array[(String, (Req, Self, Next) -> Unit)]) -> Unit
+pub fn Res::get(Self, String) -> String
 pub fn Res::header(Self, String) -> String
+pub fn Res::headers_sent(Self) -> Bool
 pub fn Res::is_aborted(Self) -> Bool
 pub fn Res::is_ended(Self) -> Bool
 pub fn Res::json(Self, Json) -> Unit
 pub fn Res::json_string(Self, String) -> Unit
+pub fn Res::jsonp(Self, Json) -> Unit
 pub fn Res::links(Self, Array[String]) -> Self
 pub fn Res::locals(Self) -> Map[String, String]
 pub fn Res::location(Self, String) -> Self
-pub fn Res::redirect(Self, String) -> Unit
+pub fn Res::redirect(Self, String, status? : Int) -> Unit
+pub fn Res::render(Self, String, locals? : Json) -> Unit
 pub fn Res::send(Self, String) -> Unit
 pub fn Res::send_bytes(Self, Bytes) -> Unit
 pub fn Res::send_empty(Self) -> Unit
-pub fn Res::send_file(Self, String) -> Unit
+pub fn Res::send_file(Self, String, options? : FileOptions) -> Unit
+pub fn Res::send_status(Self, Int) -> Unit
 pub fn Res::set(Self, String, String) -> Self
 pub fn Res::set_header(Self, String, String) -> Unit
 pub fn Res::status(Self, Int) -> Self
 pub fn Res::status_code(Self) -> Int
 pub fn Res::type_(Self, String) -> Self
 pub fn Res::vary(Self, String) -> Self
+pub fn Res::write(Self, String) -> Bool
+pub fn Res::write_bytes(Self, Bytes) -> Bool
+
+pub struct RouteBuilder {
+  // private fields
+}
+pub fn RouteBuilder::all(Self, (Req, Res, Next) -> Unit) -> Self
+pub fn RouteBuilder::delete(Self, (Req, Res, Next) -> Unit) -> Self
+pub fn RouteBuilder::get(Self, (Req, Res, Next) -> Unit) -> Self
+pub fn RouteBuilder::head(Self, (Req, Res, Next) -> Unit) -> Self
+pub fn RouteBuilder::options(Self, (Req, Res, Next) -> Unit) -> Self
+pub fn RouteBuilder::patch(Self, (Req, Res, Next) -> Unit) -> Self
+pub fn RouteBuilder::post(Self, (Req, Res, Next) -> Unit) -> Self
+pub fn RouteBuilder::put(Self, (Req, Res, Next) -> Unit) -> Self
+
+pub struct RouteInfo {
+  http_method : String
+  path : String
+}
+#alias(method)
+pub fn RouteInfo::http_method(Self) -> String
+
+pub struct Router {
+  // private fields
+}
+pub fn Router::add_route(Self, String, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn Router::all(Self, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn Router::delete(Self, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn Router::get(Self, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn Router::head(Self, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn Router::new(merge_params? : Bool) -> Self
+pub fn Router::options(Self, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn Router::param(Self, String, (Req, Next) -> Unit) -> Unit
+pub fn Router::patch(Self, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn Router::post(Self, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn Router::put(Self, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn Router::route(Self, String) -> RouteBuilder
+pub fn Router::use_at(Self, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn Router::use_error(Self, (String, Req, Res, Next) -> Unit) -> Unit
+pub fn Router::use_error_at(Self, String, (String, Req, Res, Next) -> Unit) -> Unit
+#alias(use)
+pub fn Router::use_middleware(Self, (Req, Res, Next) -> Unit) -> Unit
+pub fn Router::use_router(Self, String, Self) -> Unit
 
 #external
 pub type UwsApp
@@ -203,5 +349,7 @@ pub type ErrorMiddleware = (String, Req, Res, Next) -> Unit
 pub type Handler = (Req, Res, Next) -> Unit
 
 pub type Middleware = (Req, Res, Next) -> Unit
+
+pub type ViewEngine = (String, String, Json) -> String
 
 // Traits

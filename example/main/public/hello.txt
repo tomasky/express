@@ -1,0 +1,2 @@
+Hello from express_static! This file is served with ETag, Last-Modified and
+Range support.
