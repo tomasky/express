@@ -23,10 +23,14 @@ jobs:
             moon version --all
             moon update
       - name: Install native toolchain
-        run: sudo apt-get update && sudo apt-get install -y g++ zlib1g-dev
+        run: sudo apt-get update && sudo apt-get install -y g++ zlib1g-dev libssl-dev
       - name: Check
         run: moon check
       - name: Build
         run: moon build
+      - name: Build examples
+        run: |
+          moon build example/main
+          moon build example/tls
       - name: Test
         run: moon test
