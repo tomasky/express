@@ -38,30 +38,12 @@ struct ShimApp {
   uWS::SSLApp *ssl = nullptr;
 };
 
-uwb_req_cb g_req_cb = {nullptr, nullptr};
-uwb_body_cb g_body_cb = {nullptr, nullptr};
-uwb_abort_cb g_abort_cb = {nullptr, nullptr};
+uwb_req_cb g_req_cb = nullptr;
+uwb_body_cb g_body_cb = nullptr;
+uwb_abort_cb g_abort_cb = nullptr;
 uwb_ws_open_cb g_ws_open_cb = nullptr;
 uwb_ws_message_cb g_ws_message_cb = nullptr;
 uwb_ws_close_cb g_ws_close_cb = nullptr;
-
-static inline void call_req_cb(uwb_req_cb cb, uint64_t app_id, void* res, void* req) {
-  typedef void (*Fn)(void*, uint64_t, void*, void*);
-  Fn fn = (Fn)cb.fn;
-  fn(cb.env, app_id, res, req);
-}
-
-static inline void call_body_cb(uwb_body_cb cb, uint64_t request_id, moonbit_bytes_t body, int32_t len, int32_t status) {
-  typedef void (*Fn)(void*, uint64_t, moonbit_bytes_t, int32_t, int32_t);
-  Fn fn = (Fn)cb.fn;
-  fn(cb.env, request_id, body, len, status);
-}
-
-static inline void call_abort_cb(uwb_abort_cb cb, uint64_t request_id) {
-  typedef void (*Fn)(void*, uint64_t);
-  Fn fn = (Fn)cb.fn;
-  fn(cb.env, request_id);
-}
 uint64_t g_next_conn_id = 1;
 
 /* Snapshot of the request currently being dispatched. µWebSockets runs one
@@ -97,21 +79,14 @@ std::string_view view_of(moonbit_bytes_t bytes, int32_t len) {
 /* Handlers for plain (non-SSL) app */
 void handle_request_plain(uWS::HttpResponse<false> *res, uWS::HttpRequest *req, uint64_t app_id) {
   g_method.assign(req->getMethod());
-  std::string_view url = req->getUrl();
-  size_t qpos = url.find('?');
-  if (qpos != std::string_view::npos) {
-    g_url.assign(url.substr(0, qpos));
-    g_query.assign(url.substr(qpos + 1));
-  } else {
-    g_url.assign(url);
-    g_query.clear();
-  }
+  g_url.assign(req->getUrl());
+  g_query.assign(req->getQuery());
   g_headers.clear();
   for (auto [key, value] : *req) {
     g_headers.emplace_back(std::string(key), std::string(value));
   }
-  if (g_req_cb.fn != nullptr) {
-    call_req_cb(g_req_cb, app_id, res, req);
+  if (g_req_cb != nullptr) {
+    g_req_cb(app_id, res, req);
   }
 }
 
@@ -141,21 +116,14 @@ void handle_ws_close_plain(WebSocketPlain *ws, int code, std::string_view messag
 /* Handlers for SSL app */
 void handle_request_ssl(uWS::HttpResponse<true> *res, uWS::HttpRequest *req, uint64_t app_id) {
   g_method.assign(req->getMethod());
-  std::string_view url = req->getUrl();
-  size_t qpos = url.find('?');
-  if (qpos != std::string_view::npos) {
-    g_url.assign(url.substr(0, qpos));
-    g_query.assign(url.substr(qpos + 1));
-  } else {
-    g_url.assign(url);
-    g_query.clear();
-  }
+  g_url.assign(req->getUrl());
+  g_query.assign(req->getQuery());
   g_headers.clear();
   for (auto [key, value] : *req) {
     g_headers.emplace_back(std::string(key), std::string(value));
   }
-  if (g_req_cb.fn != nullptr) {
-    call_req_cb(g_req_cb, app_id, res, req);
+  if (g_req_cb != nullptr) {
+    g_req_cb(app_id, res, req);
   }
 }
 
@@ -379,8 +347,8 @@ void uwb_res_end_empty(void *res) {
 
 void uwb_res_on_aborted(void *res, uint64_t request_id) {
   static_cast<uWS::HttpResponse<false> *>(res)->onAborted([request_id]() {
-    if (g_abort_cb.fn != nullptr) {
-      call_abort_cb(g_abort_cb, request_id);
+    if (g_abort_cb != nullptr) {
+      g_abort_cb(request_id);
     }
   });
 }
@@ -434,16 +402,16 @@ void uwb_res_on_data(void *res, uint64_t request_id, int32_t limit) {
         }
         if (body->size() + chunk.size() > static_cast<size_t>(limit)) {
           *done = true;
-          if (g_body_cb.fn != nullptr) {
-            call_body_cb(g_body_cb, request_id, moonbit_make_bytes_raw(0), 0, UWB_BODY_TOO_LARGE);
+          if (g_body_cb != nullptr) {
+            g_body_cb(request_id, moonbit_make_bytes_raw(0), 0, UWB_BODY_TOO_LARGE);
           }
           return;
         }
         body->append(chunk.data(), chunk.size());
         if (is_last) {
           *done = true;
-          if (g_body_cb.fn != nullptr) {
-            call_body_cb(g_body_cb, request_id, make_bytes(*body),
+          if (g_body_cb != nullptr) {
+            g_body_cb(request_id, make_bytes(*body),
                       static_cast<int32_t>(body->size()), UWB_BODY_OK);
           }
         }

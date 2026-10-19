@@ -1,6 +1,5 @@
 ///|
 fn main {
-  println("Starting server...")
   let app = @lib.express()
 
   // Built-in middleware, mirroring Express.
@@ -10,20 +9,22 @@ fn main {
   app.use(@lib.express_urlencoded())
 
   // Routes.
-  app.get("/", fn(_req, res, _next) { 
-    println("Handler / called")
-    res.send("Hello from MoonBit express!") 
-  })
+  app.get("/", fn(_req, res, _next) { res.send("Hello from MoonBit express!") })
 
   app.get("/users/:id", fn(req, res, _next) {
-    println("Handler /users/:id called")
     let id = req.param("id")
     let tab = req.query_param("tab")
+    let from_param = match req.locals().get("id_from_param") {
+      Some(value) => value
+      None => ""
+    }
     res.json_string(
       "{\"id\":\"" +
       id +
       "\",\"tab\":\"" +
       tab +
+      "\",\"param_seen\":\"" +
+      from_param +
       "\",\"method\":\"" +
       req.http_method() +
       "\"}",
@@ -59,6 +60,12 @@ fn main {
   })
 
   app.get("/redirect", fn(_req, res, _next) { res.redirect("/") })
+
+  // app.param runs for every route that captures `:id`, before its handler.
+  app.param("id", fn(req, next) {
+    req.locals().set("id_from_param", req.param("id"))
+    next.proceed()
+  })
 
   app.get("/cookie", fn(_req, res, _next) {
     res.cookie("theme", "dark blue").send("cookie set")

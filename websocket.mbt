@@ -161,7 +161,7 @@ fn ws_dispatch_open(conn_id : UInt64, route_id : Int32, ws : UwsSocket) -> Unit 
     Some(v) => v
     None => false
   }
-  let conn = WsConn::{ id: conn_id, socket: ws, is_ssl: is_ssl }
+  let conn = WsConn::{ id: conn_id, socket: ws, is_ssl, }
   g_ws_conns.set(conn_id, { route_id, conn, })
   match g_ws_behaviors.get(route_id) {
     Some(behavior) =>

@@ -16,16 +16,11 @@ extern "C" {
 #endif
 
 /* Callbacks implemented on the MoonBit side and registered once at startup.
- * MoonBit FuncRef is a fat pointer {env, fn}. We pass FuncRef by value
- * (two pointers) and call it by extracting env and fn. */
-typedef struct {
-  void* env;
-  void* fn;
-} MoonbitFuncRef;
-
-typedef MoonbitFuncRef uwb_req_cb;
-typedef MoonbitFuncRef uwb_body_cb;
-typedef MoonbitFuncRef uwb_abort_cb;
+ * A non-capturing MoonBit `FuncRef` is passed to C as a plain function
+ * pointer, so these are ordinary C function-pointer types. */
+typedef void (*uwb_req_cb)(uint64_t app_id, void *res, void *req);
+typedef void (*uwb_body_cb)(uint64_t request_id, moonbit_bytes_t body, int32_t len, int32_t status);
+typedef void (*uwb_abort_cb)(uint64_t request_id);
 
 /* status for uwb_body_cb */
 #define UWB_BODY_OK 0

@@ -244,7 +244,9 @@ Non-blocking TLS (call `app.run()` yourself):
 ```moonbit nocheck
 ///|
 fn main {
-  let app = @express.listen_tls_async("cert.pem", "key.pem", "0.0.0.0", 8443, fn(ok) {
+  let app = @express.listen_tls_async("cert.pem", "key.pem", "0.0.0.0", 8443, fn(
+    ok,
+  ) {
     println("TLS listen: " + ok.to_string())
   })
   app.get("/", fn(req, res, _next) { res.send("hello over TLS") })

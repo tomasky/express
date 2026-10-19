@@ -242,7 +242,10 @@ pub fn Req::accepts(self : Req, types : Array[String]) -> String {
       let t_str = t
       if media_range == t_str ||
         (media_range.has_prefix("*/") && t_str.has_suffix(media_range[1:])) ||
-        (media_range.has_suffix("/*") && t_str.has_prefix(media_range[:media_range.length() - 1])) {
+        (
+          media_range.has_suffix("/*") &&
+          t_str.has_prefix(media_range[:media_range.length() - 1])
+        ) {
         return t_str
       }
       if media_range == "*/*" {
@@ -559,7 +562,11 @@ pub fn Res::send_file(self : Res, path : String) -> Unit {
   self.ended = true
   let kind = fs_kind(path)
   if kind != 1 {
-    ignore(self.status(404).send("Cannot " + self.status_code.to_string() + " " + path))
+    ignore(
+      self
+      .status(404)
+      .send("Cannot " + self.status_code.to_string() + " " + path),
+    )
     return
   }
   let data = fs_read_file(path)
@@ -758,7 +765,11 @@ pub fn App::locals(self : App) -> Map[String, String] {
 ///|
 /// Adds a param callback. Called when a route param with `name` is matched.
 /// The callback receives `(req, next)` and should call `next.proceed()` to continue.
-pub fn App::param(self : App, name : String, callback : (Req, Next) -> Unit) -> Unit {
+pub fn App::param(
+  self : App,
+  name : String,
+  callback : (Req, Next) -> Unit,
+) -> Unit {
   self.param_callbacks.push((name, callback))
 }
 
@@ -849,9 +860,24 @@ pub fn listen_tls(
   cb : (Bool) -> Unit,
 ) -> App {
   let app = express()
-  app.uws = uwb_app_new_ssl(UwsSslOptions::{ cert_file, key_file, passphrase: None, dh_params_file: None, ca_file: None, ssl_ciphers: None })
+  app.uws = uwb_app_new_ssl(UwsSslOptions::{
+    cert_file,
+    key_file,
+    passphrase: None,
+    dh_params_file: None,
+    ca_file: None,
+    ssl_ciphers: None,
+  })
   app.is_ssl = true
-  let ok = uwb_app_listen_ssl(app.uws, app.id, utf8_bytes(""), 0, port, UwsSslOptions::{ cert_file, key_file, passphrase: None, dh_params_file: None, ca_file: None, ssl_ciphers: None }) != 0
+  let ok = uwb_app_listen_ssl(app.uws, app.id, utf8_bytes(""), 0, port, UwsSslOptions::{
+      cert_file,
+      key_file,
+      passphrase: None,
+      dh_params_file: None,
+      ca_file: None,
+      ssl_ciphers: None,
+    }) !=
+    0
   cb(ok)
   if ok {
     uwb_app_run(app.uws)
@@ -869,10 +895,32 @@ pub fn listen_tls_host(
   cb : (Bool) -> Unit,
 ) -> App {
   let app = express()
-  app.uws = uwb_app_new_ssl(UwsSslOptions::{ cert_file, key_file, passphrase: None, dh_params_file: None, ca_file: None, ssl_ciphers: None })
+  app.uws = uwb_app_new_ssl(UwsSslOptions::{
+    cert_file,
+    key_file,
+    passphrase: None,
+    dh_params_file: None,
+    ca_file: None,
+    ssl_ciphers: None,
+  })
   app.is_ssl = true
   let host_bytes = utf8_bytes(host)
-  let ok = uwb_app_listen_ssl(app.uws, app.id, host_bytes, host_bytes.length(), port, UwsSslOptions::{ cert_file, key_file, passphrase: None, dh_params_file: None, ca_file: None, ssl_ciphers: None }) != 0
+  let ok = uwb_app_listen_ssl(
+      app.uws,
+      app.id,
+      host_bytes,
+      host_bytes.length(),
+      port,
+      UwsSslOptions::{
+        cert_file,
+        key_file,
+        passphrase: None,
+        dh_params_file: None,
+        ca_file: None,
+        ssl_ciphers: None,
+      },
+    ) !=
+    0
   cb(ok)
   if ok {
     uwb_app_run(app.uws)
@@ -891,10 +939,32 @@ pub fn listen_tls_async(
   cb : (Bool) -> Unit,
 ) -> App {
   let app = express()
-  app.uws = uwb_app_new_ssl(UwsSslOptions::{ cert_file, key_file, passphrase: None, dh_params_file: None, ca_file: None, ssl_ciphers: None })
+  app.uws = uwb_app_new_ssl(UwsSslOptions::{
+    cert_file,
+    key_file,
+    passphrase: None,
+    dh_params_file: None,
+    ca_file: None,
+    ssl_ciphers: None,
+  })
   app.is_ssl = true
   let host_bytes = utf8_bytes(host)
-  let ok = uwb_app_listen_ssl(app.uws, app.id, host_bytes, host_bytes.length(), port, UwsSslOptions::{ cert_file, key_file, passphrase: None, dh_params_file: None, ca_file: None, ssl_ciphers: None }) != 0
+  let ok = uwb_app_listen_ssl(
+      app.uws,
+      app.id,
+      host_bytes,
+      host_bytes.length(),
+      port,
+      UwsSslOptions::{
+        cert_file,
+        key_file,
+        passphrase: None,
+        dh_params_file: None,
+        ca_file: None,
+        ssl_ciphers: None,
+      },
+    ) !=
+    0
   cb(ok)
   app
 }
@@ -921,22 +991,39 @@ priv struct DispatchState {
 
 ///|
 /// Registers the three C callbacks. Runs once.
+///
+/// The lambdas must not capture anything: a non-capturing MoonBit `FuncRef`
+/// is passed to C as a plain function pointer, which the shim calls directly.
 fn init_shim() -> Unit {
   if g_shim_ready[0] {
     return
   }
   g_shim_ready[0] = true
-  uwb_set_callbacks(
-    fn(app_id, uws_res, _uws_req) { dispatch_request(app_id, uws_res, _uws_req) },
-    fn(request_id, body, len, status) { dispatch_body(request_id, body, len, status) },
-    fn(request_id) { dispatch_abort(request_id) },
-  )
+  let on_request : FuncRef[(UInt64, UwsRes, UwsReq) -> Unit] = (
+    app_id,
+    uws_res,
+    req,
+  ) => dispatch_request(app_id, uws_res, req)
+  let on_body : FuncRef[(UInt64, Bytes, Int32, Int32) -> Unit] = (
+    request_id,
+    body,
+    len,
+    status,
+  ) => dispatch_body(request_id, body, len, status)
+  let on_abort : FuncRef[(UInt64) -> Unit] = request_id => {
+    dispatch_abort(request_id)
+  }
+  uwb_set_callbacks(on_request, on_body, on_abort)
   init_websockets()
 }
 
 ///|
 /// Dispatches an incoming HTTP request to the registered app.
-pub fn dispatch_request(app_id : UInt64, uws_res : UwsRes, _uws_req : UwsReq) -> Unit {
+pub fn dispatch_request(
+  app_id : UInt64,
+  uws_res : UwsRes,
+  _uws_req : UwsReq,
+) -> Unit {
   match g_apps.get(app_id) {
     Some(app) => start_request(app, uws_res)
     None => ()
@@ -945,7 +1032,12 @@ pub fn dispatch_request(app_id : UInt64, uws_res : UwsRes, _uws_req : UwsReq) ->
 
 ///|
 /// Dispatches request body data to the pending request.
-pub fn dispatch_body(request_id : UInt64, body : Bytes, _len : Int32, status : Int32) -> Unit {
+pub fn dispatch_body(
+  request_id : UInt64,
+  body : Bytes,
+  _len : Int32,
+  status : Int32,
+) -> Unit {
   match g_requests.get(request_id) {
     Some(state) =>
       match state.body_reader {
@@ -974,8 +1066,6 @@ pub fn dispatch_abort(request_id : UInt64) -> Unit {
 
 ///|
 let g_shim_ready : Array[Bool] = [false]
-
-
 
 ///|
 fn start_request(app : App, uws_res : UwsRes) -> Unit {
@@ -1011,8 +1101,12 @@ fn start_request(app : App, uws_res : UwsRes) -> Unit {
     cookies: parse_cookies(cookie_header),
     remote_ip: utf8_string(uwb_res_remote_address(uws_res)),
     aborted: false,
-    locals: app.locals,
-    protocol: if app.is_ssl { "https" } else { "http" },
+    locals: Map([]),
+    protocol: if app.is_ssl {
+      "https"
+    } else {
+      "http"
+    },
     secure: app.is_ssl,
   }
   let res = Res::{
@@ -1022,7 +1116,7 @@ fn start_request(app : App, uws_res : UwsRes) -> Unit {
     headers: [],
     ended: false,
     aborted: false,
-    locals: app.locals,
+    locals: Map([]),
     vary_headers: [],
   }
   let state : RequestState = { req, res, body_reader: None, }
@@ -1067,9 +1161,10 @@ fn dispatch(app : App, req : Req, res : Res) -> Unit {
               match pattern.match_path(req.path(), true) {
                 Some(params) => {
                   req.set_params(params)
-                  run_param_callbacks(app, req, make_next(state, steps[0]))
                   running = false
-                  middleware(req, res, make_next(state, steps[0]))
+                  run_param_callbacks(app, req, state, steps[0], fn() {
+                    middleware(req, res, make_next(state, steps[0]))
+                  })
                 }
                 None => ()
               }
@@ -1081,10 +1176,11 @@ fn dispatch(app : App, req : Req, res : Res) -> Unit {
               match pattern.match_path(req.path(), true) {
                 Some(params) => {
                   req.set_params(params)
-                  run_param_callbacks(app, req, make_next(state, steps[0]))
                   state.error = None
                   running = false
-                  middleware(message, req, res, make_next(state, steps[0]))
+                  run_param_callbacks(app, req, state, steps[0], fn() {
+                    middleware(message, req, res, make_next(state, steps[0]))
+                  })
                 }
                 None => ()
               }
@@ -1096,9 +1192,10 @@ fn dispatch(app : App, req : Req, res : Res) -> Unit {
             match pattern.match_path(req.path(), false) {
               Some(params) => {
                 req.set_params(params)
-                run_param_callbacks(app, req, make_next(state, steps[0]))
                 running = false
-                handler(req, res, make_next(state, steps[0]))
+                run_param_callbacks(app, req, state, steps[0], fn() {
+                  handler(req, res, make_next(state, steps[0]))
+                })
               }
               None => ()
             }
@@ -1125,30 +1222,42 @@ fn make_next(state : DispatchState, step : () -> Unit) -> Next {
 }
 
 ///|
-/// Runs all registered param callbacks for the params in the current request.
-fn run_param_callbacks(app : App, req : Req, next : Next) -> Unit {
-  for (param_name, callback) in app.param_callbacks {
-    if req.has_param(param_name) {
-      let value = req.param(param_name)
-      if value != "" {
-        let next_ref = make_next_ref(next)
-        callback(req, next_ref)
+/// Runs the `app.param` callbacks that apply to the params captured by the
+/// layer currently being dispatched, in registration order, then invokes
+/// `then_fn` (normally the layer handler). Each callback receives a `Next`:
+/// calling `proceed()` moves on to the remaining callbacks and finally
+/// `then_fn`; calling `fail(message)` hands control to the error middleware.
+fn run_param_callbacks(
+  app : App,
+  req : Req,
+  state : DispatchState,
+  dispatch_step : () -> Unit,
+  then_fn : () -> Unit,
+) -> Unit {
+  let cursor : Array[Int32] = [0]
+  let steps : Array[() -> Unit] = [fn() { () }]
+  let step_params = fn() {
+    let mut i = cursor[0]
+    while i < app.param_callbacks.length() {
+      let (name, callback) = app.param_callbacks[i]
+      cursor[0] = i + 1
+      if req.has_param(name) {
+        let next : Next = {
+          run: fn(error) {
+            state.error = error
+            dispatch_step()
+          },
+          proceed_fn: steps[0],
+        }
+        callback(req, next)
         return
       }
+      i = i + 1
     }
+    then_fn()
   }
-  next.proceed()
-}
-
-///|
-/// Helper to create a Next that wraps another Next, allowing sequential execution.
-fn make_next_ref(next : Next) -> Next {
-  {
-    run: fn(error) {
-      (next.run)(error)
-    },
-    proceed_fn: next.proceed_fn,
-  }
+  steps[0] = step_params
+  step_params()
 }
 
 ///|
@@ -1168,16 +1277,16 @@ fn finalize(state : DispatchState, req : Req, res : Res) -> Unit {
       println("express: unhandled error: " + message)
       res.status(500).send("Internal Server Error")
     }
-    None => {
+    None =>
       // Auto-handle OPTIONS preflight on 404
       if req.http_method() == "OPTIONS" {
-        res.status(200)
-          .set("Allow", "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD")
-          .set("Content-Type", "text/plain; charset=utf-8")
-          .send("")
+        res
+        .status(200)
+        .set("Allow", "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD")
+        .set("Content-Type", "text/plain; charset=utf-8")
+        .send("")
       } else {
         res.status(404).send("Cannot " + req.http_method() + " " + req.path())
       }
-    }
   }
 }
