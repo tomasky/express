@@ -282,6 +282,7 @@ pub struct Res {
   priv mut aborted : Bool
   priv locals : Map[String, String]
   priv vary_headers : Array[String]
+  priv is_ssl : Bool
 }
 
 ///|
@@ -341,6 +342,15 @@ fn Res::remove_header(self : Res, name : String) -> Unit {
 }
 
 ///|
+fn Res::ssl_flag(self : Res) -> Int32 {
+  if self.is_ssl {
+    1
+  } else {
+    0
+  }
+}
+
+///|
 pub fn Res::is_ended(self : Res) -> Bool {
   self.ended
 }
@@ -368,7 +378,7 @@ pub fn Res::send(self : Res, body : String) -> Unit {
   }
   self.write_head()
   let bytes = utf8_bytes(body)
-  uwb_res_end(self.uws_res, bytes, bytes.length())
+  uwb_res_end(self.uws_res, self.ssl_flag(), bytes, bytes.length())
   release_request(self.request_id)
 }
 
@@ -380,7 +390,7 @@ pub fn Res::send_bytes(self : Res, body : Bytes) -> Unit {
   }
   self.ended = true
   self.write_head()
-  uwb_res_end(self.uws_res, body, body.length())
+  uwb_res_end(self.uws_res, self.ssl_flag(), body, body.length())
   release_request(self.request_id)
 }
 
@@ -391,7 +401,7 @@ pub fn Res::send_empty(self : Res) -> Unit {
   }
   self.ended = true
   self.write_head()
-  uwb_res_end_empty(self.uws_res)
+  uwb_res_end_empty(self.uws_res, self.ssl_flag())
   release_request(self.request_id)
 }
 
@@ -487,12 +497,18 @@ pub fn Res::redirect(self : Res, url : String) -> Unit {
 fn Res::write_head(self : Res) -> Unit {
   let line = self.status_code.to_string() + " " + status_text(self.status_code)
   let status_bytes = utf8_bytes(line)
-  uwb_res_write_status(self.uws_res, status_bytes, status_bytes.length())
+  uwb_res_write_status(
+    self.uws_res,
+    self.ssl_flag(),
+    status_bytes,
+    status_bytes.length(),
+  )
   for pair in self.headers {
     let name = utf8_bytes(pair.0)
     let value = utf8_bytes(pair.1)
     uwb_res_write_header(
       self.uws_res,
+      self.ssl_flag(),
       name,
       name.length(),
       value,
@@ -559,21 +575,17 @@ pub fn Res::send_file(self : Res, path : String) -> Unit {
   if self.ended || self.aborted {
     return
   }
-  self.ended = true
   let kind = fs_kind(path)
   if kind != 1 {
-    ignore(
-      self
-      .status(404)
-      .send("Cannot " + self.status_code.to_string() + " " + path),
-    )
+    self.status(404).send("Not Found: " + path)
     return
   }
+  self.ended = true
   let data = fs_read_file(path)
   ignore(self.set("Content-Type", mime_type(path)))
   ignore(self.set("Content-Length", data.length().to_string()))
   self.write_head()
-  uwb_res_end(self.uws_res, data, data.length())
+  uwb_res_end(self.uws_res, self.ssl_flag(), data, data.length())
   release_request(self.request_id)
 }
 
@@ -636,7 +648,7 @@ priv enum Layer {
 ///|
 pub struct App {
   priv id : UInt64
-  priv mut uws : UwsApp
+  priv uws : UwsApp
   priv mut is_ssl : Bool
   priv layers : Array[Layer]
   priv ws_routes : Array[(Int32, String)]
@@ -851,16 +863,15 @@ pub fn App::listen_async(
 }
 
 ///|
-/// Creates a TLS-enabled app and starts listening on all interfaces.
-/// `cert_file` and `key_file` must point to PEM-encoded certificate and key.
-pub fn listen_tls(
+/// Switches the app to TLS before it starts listening. `cert_file` and
+/// `key_file` must point to PEM-encoded certificate and key. For extra
+/// options (CA bundle, ciphers, ...) use `enable_tls_with`.
+pub fn App::enable_tls(
+  self : App,
   cert_file : String,
   key_file : String,
-  port : Int32,
-  cb : (Bool) -> Unit,
-) -> App {
-  let app = express()
-  app.uws = uwb_app_new_ssl(UwsSslOptions::{
+) -> Unit {
+  self.enable_tls_with(UwsSslOptions::{
     cert_file,
     key_file,
     passphrase: None,
@@ -868,105 +879,61 @@ pub fn listen_tls(
     ca_file: None,
     ssl_ciphers: None,
   })
-  app.is_ssl = true
-  let ok = uwb_app_listen_ssl(app.uws, app.id, utf8_bytes(""), 0, port, UwsSslOptions::{
-      cert_file,
-      key_file,
-      passphrase: None,
-      dh_params_file: None,
-      ca_file: None,
-      ssl_ciphers: None,
-    }) !=
-    0
-  cb(ok)
-  if ok {
-    uwb_app_run(app.uws)
-  }
-  app
 }
 
 ///|
-/// Creates a TLS-enabled app and starts listening on a specific host.
-pub fn listen_tls_host(
+/// Switches the app to TLS with full `UwsSslOptions`. Must run before
+/// `listen*` (or before `prepare()`); a TLS app is started with the same
+/// `listen` calls as a plain one.
+pub fn App::enable_tls_with(self : App, options : UwsSslOptions) -> Unit {
+  if self.prepared {
+    abort("enable_tls must be called before prepare()/listen()")
+  }
+  enable_ssl(self.uws, options)
+  self.is_ssl = true
+}
+
+///|
+/// Switches to TLS and starts listening on all interfaces, blocking in the
+/// µWebSockets event loop until `close()` is called.
+pub fn App::listen_tls(
+  self : App,
+  cert_file : String,
+  key_file : String,
+  port : Int32,
+  cb : (Bool) -> Unit,
+) -> Unit {
+  self.enable_tls(cert_file, key_file)
+  self.listen(port, cb)
+}
+
+///|
+/// Switches to TLS and starts listening on a specific host. This call blocks.
+pub fn App::listen_tls_host(
+  self : App,
   cert_file : String,
   key_file : String,
   host : String,
   port : Int32,
   cb : (Bool) -> Unit,
-) -> App {
-  let app = express()
-  app.uws = uwb_app_new_ssl(UwsSslOptions::{
-    cert_file,
-    key_file,
-    passphrase: None,
-    dh_params_file: None,
-    ca_file: None,
-    ssl_ciphers: None,
-  })
-  app.is_ssl = true
-  let host_bytes = utf8_bytes(host)
-  let ok = uwb_app_listen_ssl(
-      app.uws,
-      app.id,
-      host_bytes,
-      host_bytes.length(),
-      port,
-      UwsSslOptions::{
-        cert_file,
-        key_file,
-        passphrase: None,
-        dh_params_file: None,
-        ca_file: None,
-        ssl_ciphers: None,
-      },
-    ) !=
-    0
-  cb(ok)
-  if ok {
-    uwb_app_run(app.uws)
-  }
-  app
+) -> Unit {
+  self.enable_tls(cert_file, key_file)
+  self.listen_host(host, port, cb)
 }
 
 ///|
-/// Creates a TLS-enabled app and starts listening without blocking.
-/// Call `app.run()` yourself afterwards.
-pub fn listen_tls_async(
+/// Switches to TLS and starts listening without blocking. Call `run()`
+/// yourself afterwards.
+pub fn App::listen_tls_async(
+  self : App,
   cert_file : String,
   key_file : String,
   host : String,
   port : Int32,
   cb : (Bool) -> Unit,
-) -> App {
-  let app = express()
-  app.uws = uwb_app_new_ssl(UwsSslOptions::{
-    cert_file,
-    key_file,
-    passphrase: None,
-    dh_params_file: None,
-    ca_file: None,
-    ssl_ciphers: None,
-  })
-  app.is_ssl = true
-  let host_bytes = utf8_bytes(host)
-  let ok = uwb_app_listen_ssl(
-      app.uws,
-      app.id,
-      host_bytes,
-      host_bytes.length(),
-      port,
-      UwsSslOptions::{
-        cert_file,
-        key_file,
-        passphrase: None,
-        dh_params_file: None,
-        ca_file: None,
-        ssl_ciphers: None,
-      },
-    ) !=
-    0
-  cb(ok)
-  app
+) -> Unit {
+  self.enable_tls(cert_file, key_file)
+  self.listen_async(host, port, cb)
 }
 
 ///|
@@ -1087,6 +1054,7 @@ fn start_request(app : App, uws_res : UwsRes) -> Unit {
     Some(value) => value
     None => ""
   }
+  let ssl_flag : Int32 = if app.is_ssl { 1 } else { 0 }
   let req = Req::{
     uws_res,
     headers,
@@ -1099,7 +1067,7 @@ fn start_request(app : App, uws_res : UwsRes) -> Unit {
     body_json: None,
     body_form: Map([]),
     cookies: parse_cookies(cookie_header),
-    remote_ip: utf8_string(uwb_res_remote_address(uws_res)),
+    remote_ip: utf8_string(uwb_res_remote_address(uws_res, ssl_flag)),
     aborted: false,
     locals: Map([]),
     protocol: if app.is_ssl {
@@ -1118,10 +1086,11 @@ fn start_request(app : App, uws_res : UwsRes) -> Unit {
     aborted: false,
     locals: Map([]),
     vary_headers: [],
+    is_ssl: app.is_ssl,
   }
   let state : RequestState = { req, res, body_reader: None, }
   g_requests.set(request_id, state)
-  uwb_res_on_aborted(uws_res, request_id)
+  uwb_res_on_aborted(uws_res, ssl_flag, request_id)
   dispatch(app, req, res)
 }
 
@@ -1136,7 +1105,8 @@ fn read_body(
   match g_requests.get(res.request_id) {
     Some(state) => {
       state.body_reader = Some(reader)
-      uwb_res_on_data(req.uws_res, res.request_id, limit)
+      let ssl_flag : Int32 = if res.is_ssl { 1 } else { 0 }
+      uwb_res_on_data(req.uws_res, ssl_flag, res.request_id, limit)
     }
     None => reader("", false)
   }

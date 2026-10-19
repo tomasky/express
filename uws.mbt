@@ -61,9 +61,63 @@ extern "C" fn uwb_set_callbacks(
 extern "C" fn uwb_app_new() -> UwsApp = "uwb_app_new"
 
 ///|
-/// Creates a TLS-enabled app from the given SSL options.
-#borrow(options)
-extern "C" fn uwb_app_new_ssl(options : UwsSslOptions) -> UwsApp = "uwb_app_new_ssl"
+/// Upgrades the app to TLS with the given PEM options. Empty option strings
+/// mean "not set", except `cert_file`/`key_file` which are required.
+/// `options` fields are extracted here so the C ABI only ever sees byte slices.
+#borrow(cert_file, key_file, passphrase, dh_params_file, ca_file, ssl_ciphers)
+extern "C" fn uwb_app_enable_ssl(
+  app : UwsApp,
+  cert_file : Bytes,
+  cert_len : Int32,
+  key_file : Bytes,
+  key_len : Int32,
+  passphrase : Bytes,
+  passphrase_len : Int32,
+  dh_params_file : Bytes,
+  dh_params_len : Int32,
+  ca_file : Bytes,
+  ca_len : Int32,
+  ssl_ciphers : Bytes,
+  ciphers_len : Int32,
+) -> Unit = "uwb_app_enable_ssl"
+
+///|
+/// FFI helper: enables TLS from `UwsSslOptions`, flattening optional strings.
+fn enable_ssl(app : UwsApp, options : UwsSslOptions) -> Unit {
+  let cert = utf8_bytes(options.cert_file)
+  let key = utf8_bytes(options.key_file)
+  let passphrase = match options.passphrase {
+    Some(value) => utf8_bytes(value)
+    None => utf8_bytes("")
+  }
+  let dh_params = match options.dh_params_file {
+    Some(value) => utf8_bytes(value)
+    None => utf8_bytes("")
+  }
+  let ca = match options.ca_file {
+    Some(value) => utf8_bytes(value)
+    None => utf8_bytes("")
+  }
+  let ciphers = match options.ssl_ciphers {
+    Some(value) => utf8_bytes(value)
+    None => utf8_bytes("")
+  }
+  uwb_app_enable_ssl(
+    app,
+    cert,
+    cert.length(),
+    key,
+    key.length(),
+    passphrase,
+    passphrase.length(),
+    dh_params,
+    dh_params.length(),
+    ca,
+    ca.length(),
+    ciphers,
+    ciphers.length(),
+  )
+}
 
 ///|
 #borrow(path)
@@ -83,17 +137,6 @@ extern "C" fn uwb_app_listen(
   host_len : Int32,
   port : Int32,
 ) -> Int32 = "uwb_app_listen"
-
-///|
-#borrow(host, options)
-extern "C" fn uwb_app_listen_ssl(
-  app : UwsApp,
-  app_id : UInt64,
-  host : Bytes,
-  host_len : Int32,
-  port : Int32,
-  options : UwsSslOptions,
-) -> Int32 = "uwb_app_listen_ssl"
 
 ///|
 extern "C" fn uwb_app_run(app : UwsApp) -> Unit = "uwb_app_run"
@@ -127,6 +170,7 @@ extern "C" fn uwb_req_header_value(index : Int32) -> Bytes = "uwb_req_header_val
 #borrow(status)
 extern "C" fn uwb_res_write_status(
   res : UwsRes,
+  ssl : Int32,
   status : Bytes,
   len : Int32,
 ) -> Unit = "uwb_res_write_status"
@@ -135,6 +179,7 @@ extern "C" fn uwb_res_write_status(
 #borrow(name, value)
 extern "C" fn uwb_res_write_header(
   res : UwsRes,
+  ssl : Int32,
   name : Bytes,
   name_len : Int32,
   value : Bytes,
@@ -143,23 +188,33 @@ extern "C" fn uwb_res_write_header(
 
 ///|
 #borrow(body)
-extern "C" fn uwb_res_end(res : UwsRes, body : Bytes, len : Int32) -> Unit = "uwb_res_end"
+extern "C" fn uwb_res_end(
+  res : UwsRes,
+  ssl : Int32,
+  body : Bytes,
+  len : Int32,
+) -> Unit = "uwb_res_end"
 
 ///|
-extern "C" fn uwb_res_end_empty(res : UwsRes) -> Unit = "uwb_res_end_empty"
+extern "C" fn uwb_res_end_empty(res : UwsRes, ssl : Int32) -> Unit = "uwb_res_end_empty"
 
 ///|
-extern "C" fn uwb_res_on_aborted(res : UwsRes, request_id : UInt64) -> Unit = "uwb_res_on_aborted"
+extern "C" fn uwb_res_on_aborted(
+  res : UwsRes,
+  ssl : Int32,
+  request_id : UInt64,
+) -> Unit = "uwb_res_on_aborted"
 
 ///|
 extern "C" fn uwb_res_on_data(
   res : UwsRes,
+  ssl : Int32,
   request_id : UInt64,
   limit : Int32,
 ) -> Unit = "uwb_res_on_data"
 
 ///|
-extern "C" fn uwb_res_remote_address(res : UwsRes) -> Bytes = "uwb_res_remote_address"
+extern "C" fn uwb_res_remote_address(res : UwsRes, ssl : Int32) -> Bytes = "uwb_res_remote_address"
 
 // ---------- websockets ----------
 

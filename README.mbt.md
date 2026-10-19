@@ -50,7 +50,7 @@ fn main {
 - **Cookies** — `req.cookie(name)` / `req.cookies()`, `res.cookie(name, value)` / `res.cookie_with(...)` / `res.clear_cookie(name)`
 - **Static files** — `express_static(root)` with directory index resolution and path traversal protection
 - **Native WebSockets** — direct µWebSockets upgrade, no Node.js `http` workaround
-- **TLS / HTTPS** — `listen_tls(cert, key, port, cb)` with full `UwsSslOptions` support
+- **TLS / HTTPS** — `app.listen_tls(cert, key, port, cb)` and `listen_tls_host` / `listen_tls_async`, with full `UwsSslOptions` support
 - **CORS** — built-in permissive CORS middleware with preflight handling
 
 ## Requirements
@@ -58,14 +58,18 @@ fn main {
 - MoonBit toolchain with the `native` backend (`preferred_target = "native"`)
 - A C++17 compiler (`g++` / `clang++`) — µWebSockets is header-only C++
 - `zlib` development headers, linked as `-lz`
+- OpenSSL development headers (`libssl-dev`), linked as `-lssl -lcrypto`
 
-TLS is off by default: the vendored uSockets is compiled with `LIBUS_NO_SSL`.
-Define `MOONBIT_UWS_WITH_TLS` and link OpenSSL to re-enable it.
+TLS support is compiled into the library unconditionally, so every executable
+that depends on this package must link OpenSSL. A local build can drop TLS by
+removing `MOONBIT_UWS_WITH_TLS` from `stub-cc-flags` in `moon.pkg`; the
+vendored `libusockets.h` then falls back to `LIBUS_NO_SSL` and the link flags
+can omit `-lssl -lcrypto`.
 
 ## Building an application
 
 This package is a **library**. The executable package that depends on it must
-provide the C++ runtime and zlib at link time:
+provide the C++ runtime, zlib and OpenSSL at link time:
 
 ```moon.pkg
 import {
@@ -79,7 +83,7 @@ pkgtype(kind: "executable")
 options(
   "link": {
     "native": {
-      "cc-link-flags": "-lstdc++ -lz",
+      "cc-link-flags": "-lstdc++ -lz -lssl -lcrypto",
     },
   },
 )
@@ -108,6 +112,10 @@ moon test                   # router/query unit tests
 | `app.listen(port, cb)` | `app.listen(port, cb)` | Blocks in event loop |
 | `app.listen_host(host, port, cb)` | `app.listen(port, host, cb)` | Specific host, blocks |
 | `app.listen_async(host, port, cb)` | — | Non-blocking; call `app.run()` after |
+| `app.enable_tls(cert, key)` / `enable_tls_with(options)` | — | Switch the app to HTTPS |
+| `app.listen_tls(cert, key, port, cb)` | `https.createServer(...).listen(...)` | TLS, blocks |
+| `app.listen_tls_host(cert, key, host, port, cb)` | — | TLS on a specific host, blocks |
+| `app.listen_tls_async(cert, key, host, port, cb)` | — | TLS, non-blocking |
 | `app.run()` | — | Runs the event loop (after `listen_async`) |
 | `app.close()` | — | Closes all sockets, stops event loop |
 | `app.set(key, value)` / `app.get_setting(key)` | `app.set(key, value)` / `app.get(key)` | App settings |
@@ -223,19 +231,21 @@ All three behavior callbacks are optional.
 
 ### TLS / HTTPS
 
-To serve over TLS, use `listen_tls` or `listen_tls_async` with PEM-encoded
-certificate and key files. The vendored uSockets must be compiled with
-`MOONBIT_UWS_WITH_TLS` defined and linked against OpenSSL (`-lssl -lcrypto`).
+Call `app.enable_tls` (or one of the `listen_tls*` helpers) with PEM-encoded
+certificate and key files. Routes are registered exactly as for plain HTTP,
+and `req.secure()` / `req.protocol()` report the TLS state.
 
 ```moonbit nocheck
 ///|
 fn main {
-  // TLS app — blocks in the µWebSockets event loop
-  let app = @express.listen_tls("cert.pem", "key.pem", 8443, fn(ok) {
+  let app = @express.express()
+
+  app.get("/", fn(req, res, _next) { res.send("hello over " + req.protocol()) })
+
+  // Switches the app to TLS, then blocks in the µWebSockets event loop.
+  app.listen_tls("cert.pem", "key.pem", 8443, fn(ok) {
     println("TLS listen: " + ok.to_string())
   })
-
-  app.get("/", fn(req, res, _next) { res.send("hello over TLS") })
 }
 ```
 
@@ -244,18 +254,43 @@ Non-blocking TLS (call `app.run()` yourself):
 ```moonbit nocheck
 ///|
 fn main {
-  let app = @express.listen_tls_async("cert.pem", "key.pem", "0.0.0.0", 8443, fn(
-    ok,
-  ) {
+  let app = @express.express()
+  app.get("/", fn(_req, res, _next) { res.send("hello over TLS") })
+
+  app.listen_tls_async("cert.pem", "key.pem", "0.0.0.0", 8443, fn(ok) {
     println("TLS listen: " + ok.to_string())
   })
-  app.get("/", fn(req, res, _next) { res.send("hello over TLS") })
   app.run() // blocks
 }
 ```
 
-`UwsSslOptions` also supports `passphrase`, `dh_params_file`, `ca_file`,
-and `ssl_ciphers` for advanced TLS configuration.
+Advanced options use `enable_tls_with`, then start the app with the regular
+`listen*` calls:
+
+```moonbit nocheck
+///|
+fn main {
+  let app = @express.express()
+  app.enable_tls_with(@express.UwsSslOptions::{
+    cert_file: "cert.pem",
+    key_file: "key.pem",
+    passphrase: Some("secret"),
+    dh_params_file: None,
+    ca_file: None,
+    ssl_ciphers: Some("ECDHE+AESGCM"),
+  })
+  app.get("/", fn(_req, res, _next) { res.send("hello over TLS") })
+  app.listen(8443, fn(ok) { println("TLS listen: " + ok.to_string()) })
+}
+```
+
+For local testing, generate a self-signed pair:
+
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
+  -keyout key.pem -out cert.pem -subj "/CN=localhost"
+moon run example/tls   # HTTPS demo on :8443
+```
 
 ### Helpers exported for tests and custom routers
 
@@ -275,13 +310,19 @@ by request id (`uwb_res_on_data`).
 calls with `FuncRef` callbacks. Strings cross the boundary as UTF-8 `Bytes`.
 
 `third_party/` vendors µWebSockets (`App.h` and friends, header-only) and the
-parts of µSockets needed for the epoll/kqueue event loop and plain HTTP. Three
-local patches were applied and are marked with comments:
+parts of µSockets needed for the epoll/kqueue event loop, including the OpenSSL
+TLS backend (`crypto/openssl.c`, `crypto/sni_tree.cpp`). Local patches, each
+marked with a comment:
 
 1. `libusockets.h` defines `LIBUS_NO_SSL` unless `MOONBIT_UWS_WITH_TLS` is set.
 2. `internal/` and `eventing/` includes use paths relative to their own files,
    so the stubs compile without `-I` flags.
-3. µWebSockets headers include the vendored `libusockets.h` by relative path.
+3. `crypto/openssl.c` includes `../internal/internal.h` for the same reason.
+4. µWebSockets headers include the vendored `libusockets.h` by relative path.
+
+The shim dispatches every response write on the app's TLS mode, because
+µWebSockets compiles `HttpResponse<true>` and `HttpResponse<false>` separately
+and their socket-write paths differ.
 
 ## Differences from Express
 

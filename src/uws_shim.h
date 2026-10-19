@@ -26,13 +26,6 @@ typedef void (*uwb_abort_cb)(uint64_t request_id);
 #define UWB_BODY_OK 0
 #define UWB_BODY_TOO_LARGE 1
 
-/* TLS support */
-#ifdef MOONBIT_UWS_WITH_TLS
-#define UWB_HAVE_TLS 1
-#else
-#define UWB_HAVE_TLS 0
-#endif
-
 void uwb_set_callbacks(
     uwb_req_cb req_cb,
     uwb_body_cb body_cb,
@@ -58,21 +51,24 @@ void uwb_ws_close(void *ws, int32_t code, moonbit_bytes_t message, int32_t msg_l
 void uwb_ws_send_ssl(void *ws, moonbit_bytes_t data, int32_t len, int32_t opcode, int32_t compress);
 void uwb_ws_close_ssl(void *ws, int32_t code, moonbit_bytes_t message, int32_t msg_len);
 
-/* --- application --- */
-void *uwb_app_new(void);
-
-/* --- TLS options for uwb_app_new_ssl / uwb_app_listen_ssl --- */
-struct uwb_tls_options {
-    const char *cert_file;      /* PEM certificate file */
-    const char *key_file;       /* PEM private key file */
-    const char *passphrase;     /* key file passphrase (optional) */
-    const char *dh_params_file; /* DH params file (optional) */
-    const char *ca_file;        /* CA bundle file (optional) */
-    const char *ssl_ciphers;    /* cipher list override (optional) */
-};
-
-/* Creates a TLS-enabled app. Caller must provide valid cert/key paths. */
-void *uwb_app_new_ssl(const struct uwb_tls_options *options);
+/* --- TLS --- */
+/* Upgrades an app created by uwb_app_new() to TLS. The plain HTTP app is
+ * destroyed. Must be called before uwb_app_any()/uwb_app_listen(). Each
+ * option string is a UTF-8 byte slice; empty means "not set". */
+void uwb_app_enable_ssl(
+    void *app,
+    moonbit_bytes_t cert_file,
+    int32_t cert_len,
+    moonbit_bytes_t key_file,
+    int32_t key_len,
+    moonbit_bytes_t passphrase,
+    int32_t passphrase_len,
+    moonbit_bytes_t dh_params_file,
+    int32_t dh_params_len,
+    moonbit_bytes_t ca_file,
+    int32_t ca_len,
+    moonbit_bytes_t ssl_ciphers,
+    int32_t ciphers_len);
 
 void uwb_app_any(void *app, uint64_t app_id, moonbit_bytes_t path, int32_t path_len);
 int32_t uwb_app_listen(
@@ -81,13 +77,6 @@ int32_t uwb_app_listen(
     moonbit_bytes_t host,
     int32_t host_len,
     int32_t port);
-int32_t uwb_app_listen_ssl(
-    void *app,
-    uint64_t app_id,
-    moonbit_bytes_t host,
-    int32_t host_len,
-    int32_t port,
-    const struct uwb_tls_options *options);
 void uwb_app_run(void *app);
 void uwb_app_close(void *app);
 
@@ -99,25 +88,22 @@ int32_t uwb_req_header_count(void);
 moonbit_bytes_t uwb_req_header_name(int32_t index);
 moonbit_bytes_t uwb_req_header_value(int32_t index);
 
-/* --- response (usable asynchronously, e.g. from an onData callback) --- */
-void uwb_res_write_status(void *res, moonbit_bytes_t status, int32_t len);
+/* --- response (usable asynchronously, e.g. from an onData callback) ---
+ * `ssl` must be 1 when the response belongs to a TLS app, 0 otherwise. */
+void uwb_res_write_status(void *res, int32_t ssl, moonbit_bytes_t status, int32_t len);
 
-/* --- TLS callbacks --- */
-void uwb_tls_init(void);
-void uwb_tls_teardown(void);
-void uwb_tls_configure(void *ctx, const char *cert_file, const char *key_file, const char *ca_file);
-void uwb_tls_apply(void *res);
 void uwb_res_write_header(
     void *res,
+    int32_t ssl,
     moonbit_bytes_t name,
     int32_t name_len,
     moonbit_bytes_t value,
     int32_t value_len);
-void uwb_res_end(void *res, moonbit_bytes_t body, int32_t len);
-void uwb_res_end_empty(void *res);
-void uwb_res_on_aborted(void *res, uint64_t request_id);
-void uwb_res_on_data(void *res, uint64_t request_id, int32_t limit);
-moonbit_bytes_t uwb_res_remote_address(void *res);
+void uwb_res_end(void *res, int32_t ssl, moonbit_bytes_t body, int32_t len);
+void uwb_res_end_empty(void *res, int32_t ssl);
+void uwb_res_on_aborted(void *res, int32_t ssl, uint64_t request_id);
+void uwb_res_on_data(void *res, int32_t ssl, uint64_t request_id, int32_t limit);
+moonbit_bytes_t uwb_res_remote_address(void *res, int32_t ssl);
 
 /* --- filesystem helpers for express.static --- */
 /* kind: 0 = missing, 1 = regular file, 2 = directory */

@@ -53,12 +53,6 @@ std::string g_url;
 std::string g_query;
 std::vector<std::pair<std::string, std::string>> g_headers;
 
-/* TLS state */
-#if UWB_HAVE_TLS
-  bool g_tls_enabled = false;
-  SSL_CTL *g_ssl = nullptr;
-#endif
-
 moonbit_bytes_t make_bytes(const char *data, size_t len) {
   auto *out = moonbit_make_bytes_raw(static_cast<int32_t>(len));
   if (len > 0) {
@@ -167,19 +161,37 @@ void *uwb_app_new(void) {
   return shim;
 }
 
-void *uwb_app_new_ssl(const struct uwb_tls_options *options) {
-  auto *shim = new ShimApp();
-  uWS::SocketContextOptions opts;
-  if (options != nullptr) {
-    if (options->cert_file) opts.cert_file_name = options->cert_file;
-    if (options->key_file) opts.key_file_name = options->key_file;
-    if (options->passphrase) opts.passphrase = options->passphrase;
-    if (options->dh_params_file) opts.dh_params_file_name = options->dh_params_file;
-    if (options->ca_file) opts.ca_file_name = options->ca_file;
-    if (options->ssl_ciphers) opts.ssl_ciphers = options->ssl_ciphers;
+void uwb_app_enable_ssl(void *app,
+                        moonbit_bytes_t cert_file, int32_t cert_len,
+                        moonbit_bytes_t key_file, int32_t key_len,
+                        moonbit_bytes_t passphrase, int32_t passphrase_len,
+                        moonbit_bytes_t dh_params_file, int32_t dh_params_len,
+                        moonbit_bytes_t ca_file, int32_t ca_len,
+                        moonbit_bytes_t ssl_ciphers, int32_t ciphers_len) {
+  auto *shim = static_cast<ShimApp *>(app);
+  if (shim->ssl != nullptr) {
+    return; /* already TLS */
   }
+  /* Nothing has been registered on the plain app yet: routes go on in
+   * uwb_app_any(), which runs after this call. */
+  delete shim->plain;
+  shim->plain = nullptr;
+  /* µWebSockets copies these strings into the SSL context while it creates
+   * it, so stack-local storage is fine. */
+  std::string cert(view_of(cert_file, cert_len));
+  std::string key(view_of(key_file, key_len));
+  std::string pass(view_of(passphrase, passphrase_len));
+  std::string dh(view_of(dh_params_file, dh_params_len));
+  std::string ca(view_of(ca_file, ca_len));
+  std::string ciphers(view_of(ssl_ciphers, ciphers_len));
+  uWS::SocketContextOptions opts;
+  if (!cert.empty()) opts.cert_file_name = cert.c_str();
+  if (!key.empty()) opts.key_file_name = key.c_str();
+  if (!pass.empty()) opts.passphrase = pass.c_str();
+  if (!dh.empty()) opts.dh_params_file_name = dh.c_str();
+  if (!ca.empty()) opts.ca_file_name = ca.c_str();
+  if (!ciphers.empty()) opts.ssl_ciphers = ciphers.c_str();
   shim->ssl = new uWS::SSLApp(opts);
-  return shim;
 }
 
 void uwb_app_any(void *app, uint64_t app_id, moonbit_bytes_t path,
@@ -204,25 +216,10 @@ int32_t uwb_app_listen(void *app, uint64_t app_id, moonbit_bytes_t host,
   std::string host_str(view_of(host, host_len));
   bool ok = false;
   auto handler = [&ok](us_listen_socket_t *token) { ok = token != nullptr; };
-  if (shim->plain) {
-    shim->plain->listen(host_str, port, std::move(handler));
-  } else if (shim->ssl) {
-    shim->ssl->listen(host_str, port, std::move(handler));
-  }
-  return ok ? 1 : 0;
-}
-
-int32_t uwb_app_listen_ssl(void *app, uint64_t app_id, moonbit_bytes_t host,
-                           int32_t host_len, int32_t port,
-                           const struct uwb_tls_options *options) {
-  auto *shim = static_cast<ShimApp *>(app);
-  (void)app_id;
-  (void)options; // options already applied at creation time
-  std::string host_str(view_of(host, host_len));
-  bool ok = false;
-  auto handler = [&ok](us_listen_socket_t *token) { ok = token != nullptr; };
   if (shim->ssl) {
     shim->ssl->listen(host_str, port, std::move(handler));
+  } else if (shim->plain) {
+    shim->plain->listen(host_str, port, std::move(handler));
   }
   return ok ? 1 : 0;
 }
@@ -325,100 +322,91 @@ moonbit_bytes_t uwb_req_header_value(int32_t index) {
   return make_bytes(g_headers[static_cast<size_t>(index)].second);
 }
 
-void uwb_res_write_status(void *res, moonbit_bytes_t status, int32_t len) {
-  // Response type depends on app type; we use void* and cast appropriately
-  // For now assume plain app since that's what the MoonBit code uses
-  static_cast<uWS::HttpResponse<false> *>(res)->writeStatus(view_of(status, len));
+/* Every response call must dispatch on the app's TLS mode: µWebSockets
+ * compiles HttpResponse<true>/<false> separately and the socket write path
+ * differs, so a plain cast to the wrong instantiation would bypass TLS. */
+void uwb_res_write_status(void *res, int32_t ssl, moonbit_bytes_t status, int32_t len) {
+  if (ssl != 0) {
+    static_cast<uWS::HttpResponse<true> *>(res)->writeStatus(view_of(status, len));
+  } else {
+    static_cast<uWS::HttpResponse<false> *>(res)->writeStatus(view_of(status, len));
+  }
 }
 
-void uwb_res_write_header(void *res, moonbit_bytes_t name, int32_t name_len,
+void uwb_res_write_header(void *res, int32_t ssl, moonbit_bytes_t name, int32_t name_len,
                           moonbit_bytes_t value, int32_t value_len) {
-  static_cast<uWS::HttpResponse<false> *>(res)->writeHeader(view_of(name, name_len),
-                                                            view_of(value, value_len));
+  if (ssl != 0) {
+    static_cast<uWS::HttpResponse<true> *>(res)->writeHeader(view_of(name, name_len),
+                                                             view_of(value, value_len));
+  } else {
+    static_cast<uWS::HttpResponse<false> *>(res)->writeHeader(view_of(name, name_len),
+                                                              view_of(value, value_len));
+  }
 }
 
-void uwb_res_end(void *res, moonbit_bytes_t body, int32_t len) {
-  static_cast<uWS::HttpResponse<false> *>(res)->end(view_of(body, len));
+void uwb_res_end(void *res, int32_t ssl, moonbit_bytes_t body, int32_t len) {
+  if (ssl != 0) {
+    static_cast<uWS::HttpResponse<true> *>(res)->end(view_of(body, len));
+  } else {
+    static_cast<uWS::HttpResponse<false> *>(res)->end(view_of(body, len));
+  }
 }
 
-void uwb_res_end_empty(void *res) {
-  static_cast<uWS::HttpResponse<false> *>(res)->end();
+void uwb_res_end_empty(void *res, int32_t ssl) {
+  if (ssl != 0) {
+    static_cast<uWS::HttpResponse<true> *>(res)->end();
+  } else {
+    static_cast<uWS::HttpResponse<false> *>(res)->end();
+  }
 }
 
-void uwb_res_on_aborted(void *res, uint64_t request_id) {
-  static_cast<uWS::HttpResponse<false> *>(res)->onAborted([request_id]() {
+void uwb_res_on_aborted(void *res, int32_t ssl, uint64_t request_id) {
+  auto handler = [request_id]() {
     if (g_abort_cb != nullptr) {
       g_abort_cb(request_id);
     }
-  });
-}
-
-void uwb_tls_init(void) {
-#if UWB_HAVE_TLS
-  // Initialize OpenSSL
-  SSL_library_init();
-  SSL_load_error_strings();
-  OpenSSL_add_all_algorithms();
-#endif
-}
-
-void uwb_tls_teardown(void) {
-#if UWB_HAVE_TLS
-  // Cleanup OpenSSL
-  EVP_cleanup();
-  ERR_free_strings();
-#endif
-}
-
-void uwb_tls_configure(void *ctx, const char *cert_file, const char *key_file, const char *ca_file) {
-#if UWB_HAVE_TLS
-  // Configure TLS context with cert/key/CA
-  if (ctx) {
-    auto *ssl_ctx = static_cast<SSL_CTL *>(ctx);
-    if (cert_file) SSL_use_certificate_file(ssl_ctx, cert_file, SSL_FILETYPE_PEM);
-    if (key_file) SSL_use_private_key_file(ssl_ctx, key_file, SSL_FILETYPE_PEM);
-    if (ca_file) SSL_load_certs(ssl_ctx, ca_file, SSL_FILETYPE_PEM);
+  };
+  if (ssl != 0) {
+    static_cast<uWS::HttpResponse<true> *>(res)->onAborted(std::move(handler));
+  } else {
+    static_cast<uWS::HttpResponse<false> *>(res)->onAborted(std::move(handler));
   }
-#endif
 }
 
-void uwb_tls_apply(void *res) {
-#if UWB_HAVE_TLS
-  // Apply TLS to a response object
-  auto *http_res = static_cast<uWS::HttpResponse<true> *>(res);
-  if (http_res) {
-    http_res->setSsl(true);
-  }
-#endif
-}
-
-void uwb_res_on_data(void *res, uint64_t request_id, int32_t limit) {
+void uwb_res_on_data(void *res, int32_t ssl, uint64_t request_id, int32_t limit) {
   auto body = std::make_shared<std::string>();
   auto done = std::make_shared<bool>(false);
-  static_cast<uWS::HttpResponse<false> *>(res)->onData(
-      [request_id, limit, body, done](std::string_view chunk, bool is_last) {
-        if (*done) {
-          return;
-        }
-        if (body->size() + chunk.size() > static_cast<size_t>(limit)) {
-          *done = true;
-          if (g_body_cb != nullptr) {
-            g_body_cb(request_id, moonbit_make_bytes_raw(0), 0, UWB_BODY_TOO_LARGE);
-          }
-          return;
-        }
-        body->append(chunk.data(), chunk.size());
-        if (is_last) {
-          *done = true;
-          if (g_body_cb != nullptr) {
-            g_body_cb(request_id, make_bytes(*body),
-                      static_cast<int32_t>(body->size()), UWB_BODY_OK);
-          }
-        }
-      });
+  auto handler = [request_id, limit, body, done](std::string_view chunk, bool is_last) {
+    if (*done) {
+      return;
+    }
+    if (body->size() + chunk.size() > static_cast<size_t>(limit)) {
+      *done = true;
+      if (g_body_cb != nullptr) {
+        g_body_cb(request_id, moonbit_make_bytes_raw(0), 0, UWB_BODY_TOO_LARGE);
+      }
+      return;
+    }
+    body->append(chunk.data(), chunk.size());
+    if (is_last) {
+      *done = true;
+      if (g_body_cb != nullptr) {
+        g_body_cb(request_id, make_bytes(*body), static_cast<int32_t>(body->size()),
+                  UWB_BODY_OK);
+      }
+    }
+  };
+  if (ssl != 0) {
+    static_cast<uWS::HttpResponse<true> *>(res)->onData(std::move(handler));
+  } else {
+    static_cast<uWS::HttpResponse<false> *>(res)->onData(std::move(handler));
+  }
 }
 
-moonbit_bytes_t uwb_res_remote_address(void *res) {
+moonbit_bytes_t uwb_res_remote_address(void *res, int32_t ssl) {
+  if (ssl != 0) {
+    return make_bytes(static_cast<uWS::HttpResponse<true> *>(res)->getRemoteAddressAsText());
+  }
   return make_bytes(static_cast<uWS::HttpResponse<false> *>(res)->getRemoteAddressAsText());
 }
 

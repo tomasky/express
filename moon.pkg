@@ -10,10 +10,18 @@ warnings = "-0035"
 supported_targets = "native"
 
 options(
-  // µWebSockets is C++ and header-only, uSockets is vendored C. The stub
-  // files carry their own relative includes and default to plain HTTP, so no
-  // extra compiler flags are needed here. Executable packages that link this
-  // library add `-lstdc++ -lz` (see example/main/moon.pkg).
+  // µWebSockets is C++ and header-only; uSockets is vendored C. TLS is
+  // compiled in unconditionally so that published builds of this package can
+  // serve HTTPS: consumers only add the OpenSSL link flags (-lssl -lcrypto,
+  // see example/*/moon.pkg) to their own executable package.
+  //
+  // Note: only `stub-cc-flags` may appear here — adding `cc-link-flags` to a
+  // library package makes `moon build` treat it as an executable to link.
+  "link": {
+    "native": {
+      "stub-cc-flags": "-DMOONBIT_UWS_WITH_TLS -DLIBUS_USE_OPENSSL",
+    },
+  },
   "native-stub": [
     "src/uws_shim.cpp",
     "third_party/usockets/src/loop.c",
@@ -24,5 +32,6 @@ options(
     "third_party/usockets/src/quic.c",
     "third_party/usockets/src/eventing/epoll_kqueue.c",
     "third_party/usockets/src/crypto/openssl.c",
+    "third_party/usockets/src/crypto/sni_tree.cpp",
   ],
 )

@@ -22,12 +22,6 @@ pub fn express_text(limit? : Int) -> (Req, Res, Next) -> Unit
 
 pub fn express_urlencoded(limit? : Int) -> (Req, Res, Next) -> Unit
 
-pub fn listen_tls(String, String, Int, (Bool) -> Unit) -> App
-
-pub fn listen_tls_async(String, String, String, Int, (Bool) -> Unit) -> App
-
-pub fn listen_tls_host(String, String, String, Int, (Bool) -> Unit) -> App
-
 pub fn logger() -> (Req, Res, Next) -> Unit
 
 pub fn make_pattern(String) -> PathPattern
@@ -61,12 +55,17 @@ pub struct App {
 pub fn App::all(Self, String, (Req, Res, Next) -> Unit) -> Unit
 pub fn App::close(Self) -> Unit
 pub fn App::delete(Self, String, (Req, Res, Next) -> Unit) -> Unit
+pub fn App::enable_tls(Self, String, String) -> Unit
+pub fn App::enable_tls_with(Self, UwsSslOptions) -> Unit
 pub fn App::get(Self, String, (Req, Res, Next) -> Unit) -> Unit
 pub fn App::get_setting(Self, String) -> String
 pub fn App::head(Self, String, (Req, Res, Next) -> Unit) -> Unit
 pub fn App::listen(Self, Int, (Bool) -> Unit) -> Unit
 pub fn App::listen_async(Self, String, Int, (Bool) -> Unit) -> Unit
 pub fn App::listen_host(Self, String, Int, (Bool) -> Unit) -> Unit
+pub fn App::listen_tls(Self, String, String, Int, (Bool) -> Unit) -> Unit
+pub fn App::listen_tls_async(Self, String, String, String, Int, (Bool) -> Unit) -> Unit
+pub fn App::listen_tls_host(Self, String, String, String, Int, (Bool) -> Unit) -> Unit
 pub fn App::locals(Self) -> Map[String, String]
 pub fn App::options(Self, String, (Req, Res, Next) -> Unit) -> Unit
 pub fn App::param(Self, String, (Req, Next) -> Unit) -> Unit

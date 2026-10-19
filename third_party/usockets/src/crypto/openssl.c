@@ -25,7 +25,7 @@ void *sni_remove(void *sni, const char *hostname);
 void *sni_find(void *sni, const char *hostname);
 
 #include "../libusockets.h"
-#include "internal/internal.h"
+#include "../internal/internal.h"
 #include <string.h>
 
 /* This module contains the entire OpenSSL implementation
