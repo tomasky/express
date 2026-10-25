@@ -1,0 +1,13 @@
+import {
+  "kupas/express" @lib,
+}
+
+supported_targets = "native"
+
+pkgtype(kind: "executable")
+
+options(
+  // Same link line as the other examples: the express package compiles TLS in.
+  link: { "native": { "cc-link-flags": "-lstdc++ -lz -lssl -lcrypto" } },
+  "native-stub": [ "bench_env.c" ],
+)

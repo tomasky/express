@@ -6,3 +6,9 @@ target
 .moonagent/
 node_modules/
 *.node
+
+# benchmark artifacts (raw autocannon JSON in bench/results/ is kept on purpose)
+bench/results/raw_uws_baseline
+bench/results/*.log
+bench/loadgen
+bench/results/loadgen

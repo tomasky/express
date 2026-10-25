@@ -87,6 +87,10 @@ fn sha256_compress(
 
 ///|
 /// SHA-256 (FIPS 180-4) over `data`, returning the 32 raw digest bytes.
+///
+/// The scratch buffers are sized up front (`Array::make`) instead of grown
+/// byte by byte: the padding push loop reallocated the array about six times
+/// per call, and this runs once per response for the ETag.
 pub fn sha256_bytes(data : Bytes) -> Bytes {
   let state : Array[UInt32] = [
     0x6a09e667U, 0xbb67ae85U, 0x3c6ef372U, 0xa54ff53aU, 0x510e527fU, 0x9b05688cU,
@@ -94,29 +98,28 @@ pub fn sha256_bytes(data : Bytes) -> Bytes {
   ]
   let data_len = data.length()
   let total = (data_len + 9 + 63) / 64 * 64
-  let padded : Array[Byte] = []
+  let padded : Array[Byte] = Array::make(total, b'\x00')
   for i = 0; i < data_len; i = i + 1 {
-    padded.push(data[i])
+    padded[i] = data[i]
   }
-  padded.push((0x80 : Int32).to_byte())
-  while padded.length() < total - 8 {
-    padded.push((0 : Int32).to_byte())
-  }
+  padded[data_len] = (0x80 : Int32).to_byte()
   let bit_len = data_len.to_int64() * 8L
   for i = 0; i < 8; i = i + 1 {
-    padded.push((bit_len >> ((7 - i) * 8)).to_byte())
+    padded[total - 8 + i] = (bit_len >> ((7 - i) * 8)).to_byte()
   }
   let mut offset = 0
   while offset < total {
     sha256_compress(state, padded, offset)
     offset = offset + 64
   }
-  let out : Array[Byte] = []
+  let out : Array[Byte] = Array::make(32, b'\x00')
+  let mut index = 0
   for word in state {
-    out.push(((word >> 24) & 0xffU).reinterpret_as_int().to_byte())
-    out.push(((word >> 16) & 0xffU).reinterpret_as_int().to_byte())
-    out.push(((word >> 8) & 0xffU).reinterpret_as_int().to_byte())
-    out.push((word & 0xffU).reinterpret_as_int().to_byte())
+    out[index] = ((word >> 24) & 0xffU).reinterpret_as_int().to_byte()
+    out[index + 1] = ((word >> 16) & 0xffU).reinterpret_as_int().to_byte()
+    out[index + 2] = ((word >> 8) & 0xffU).reinterpret_as_int().to_byte()
+    out[index + 3] = (word & 0xffU).reinterpret_as_int().to_byte()
+    index = index + 4
   }
   Bytes::from_array(out)
 }

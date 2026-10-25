@@ -20,10 +20,20 @@ options(
   // library package makes `moon build` treat it as an executable to link.
   link: {
     "native": {
+      // `-O3`: `moon` compiles `native-stub` files with no `-O` flag, so
+      // without this the header-only uWebSockets engine (and uSockets) is
+      // built at the compiler default, `-O0`, even under `moon build
+      // --release`. That roughly halves the executable and buys ~5% more
+      // throughput on the benchmark routes (measured paired on a pinned
+      // core); it is a cheap win rather than a large one, because a tiny
+      // handler is dominated by syscalls and allocation, not by arithmetic.
+      // Drop the flag only if the stub compiler rejects it (MSVC `cl.exe`
+      // only warns on unknown options).
+      //
       // `-Wno-deprecated-declarations`: the vendored OpenSSL backend of
       // uSockets still uses OpenSSL 1.x APIs (DH_free, PEM_read_DHparams)
       // that OpenSSL 3 marks deprecated; we compile third-party code as-is.
-      "stub-cc-flags": "-DMOONBIT_UWS_WITH_TLS -DLIBUS_USE_OPENSSL -Wno-deprecated-declarations",
+      "stub-cc-flags": "-O3 -DMOONBIT_UWS_WITH_TLS -DLIBUS_USE_OPENSSL -Wno-deprecated-declarations",
     },
   },
   "native-stub": [

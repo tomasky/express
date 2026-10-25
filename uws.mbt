@@ -156,13 +156,9 @@ extern "C" fn uwb_req_url() -> Bytes = "uwb_req_url"
 extern "C" fn uwb_req_query() -> Bytes = "uwb_req_query"
 
 ///|
-extern "C" fn uwb_req_header_count() -> Int32 = "uwb_req_header_count"
-
-///|
-extern "C" fn uwb_req_header_name(index : Int32) -> Bytes = "uwb_req_header_name"
-
-///|
-extern "C" fn uwb_req_header_value(index : Int32) -> Bytes = "uwb_req_header_value"
+/// All headers of the current request in one buffer, as `name\0value\0`
+/// pairs. One FFI call and one allocation per request.
+extern "C" fn uwb_req_headers_blob() -> Bytes = "uwb_req_headers_blob"
 
 // ---------- response ----------
 

@@ -13,19 +13,141 @@
 let g_apps : Map[UInt64, App] = Map([])
 
 ///|
-/// Per-request state, keyed by the id handed to the shim.
-let g_requests : Map[UInt64, RequestState] = Map([])
+/// Per-request state, in a flat slot table instead of a hash map. The id handed
+/// to the shim packs `(generation << 32) | slot`, so a lookup is one array
+/// index plus one comparison instead of three hash operations, and memory is
+/// bounded by peak concurrency rather than by total requests served.
+let g_request_slots : Array[RequestState?] = []
 
 ///|
-/// Monotonic id source for apps and requests.
+/// Current generation per slot. Bumped every time the slot is handed out, so an
+/// `onAborted`/`onData` callback that arrives after its request finished cannot
+/// reach the newer request that reused the slot: the generations differ.
+let g_request_gens : Array[UInt64] = []
+
+///|
+/// Slots of finished requests, ready to be reused.
+let g_request_free : Array[Int32] = []
+
+///|
+/// Takes a free slot and returns the packed request id. The slot is filled by
+/// `request_slot_fill` once the `Req`/`Res` exist; nothing can call back in
+/// between, so no lookup ever observes the empty window.
+fn request_slot_reserve() -> UInt64 {
+  match g_request_free.pop() {
+    Some(slot) => {
+      let gen = g_request_gens[slot] + 1UL
+      g_request_gens[slot] = gen
+      (gen << 32) | slot.to_uint64()
+    }
+    None => {
+      let slot = g_request_slots.length()
+      g_request_slots.push(None)
+      g_request_gens.push(1UL)
+      (1UL << 32) | slot.to_uint64()
+    }
+  }
+}
+
+///|
+/// Stores the state in the slot the id was reserved from.
+fn request_slot_fill(id : UInt64, state : RequestState) -> Unit {
+  let (gen, slot) = request_slot_split(id)
+  if slot >= 0 && slot < g_request_slots.length() && g_request_gens[slot] == gen {
+    g_request_slots[slot] = Some(state)
+  }
+}
+
+///|
+/// Unpacks an id into `(generation, slot)`.
+fn request_slot_split(id : UInt64) -> (UInt64, Int32) {
+  (id >> 32, (id & 0xFFFFFFFFUL).to_int())
+}
+
+///|
+fn request_slot_get(id : UInt64) -> RequestState? {
+  let (gen, slot) = request_slot_split(id)
+  if slot < 0 || slot >= g_request_slots.length() {
+    return None
+  }
+  if g_request_gens[slot] != gen {
+    return None
+  }
+  g_request_slots[slot]
+}
+
+///|
+/// Clears the slot. Idempotent: a second call for the same id finds the slot
+/// already empty (or reused with a different generation) and does nothing, so a
+/// slot is never pushed onto the free list twice.
+fn request_slot_clear(id : UInt64) -> Unit {
+  let (gen, slot) = request_slot_split(id)
+  if slot < 0 || slot >= g_request_slots.length() {
+    return
+  }
+  if g_request_gens[slot] != gen {
+    return
+  }
+  if g_request_slots[slot] is Some(_) {
+    g_request_slots[slot] = None
+    g_request_free.push(slot)
+  }
+}
+
+///|
+/// ASCII case-insensitive string equality, for HTTP header names (which are
+/// ASCII by spec).
+///
+/// Header names are compared this way instead of lowercasing both sides,
+/// because `String::to_lower` has to allocate whenever the name contains an
+/// uppercase letter -- and the common names (`Content-Type`, `ETag`,
+/// `Set-Cookie`, ...) all do. That made every header lookup on the response
+/// path allocate two or three short strings.
+fn eq_header_name(a : String, b : String) -> Bool {
+  let len = a.length()
+  if len != b.length() {
+    return false
+  }
+  let mut index = 0
+  while index < len {
+    let mut left = a.unsafe_get(index).to_int()
+    let mut right = b.unsafe_get(index).to_int()
+    if left != right {
+      if left >= 65 && left <= 90 {
+        left = left + 32
+      }
+      if right >= 65 && right <= 90 {
+        right = right + 32
+      }
+      if left != right {
+        return false
+      }
+    }
+    index = index + 1
+  }
+  true
+}
+
+///|
+/// Monotonic id source for applications. Request ids come from the slot table.
 let g_next_id : Array[UInt64] = [1]
+
+///|
+/// Shared no-op used to break the middleware-chain cycle when a request ends.
+let g_noop_step : Step = fn() { () }
 
 ///|
 fn next_id() -> UInt64 {
   let id = g_next_id[0]
-  g_next_id[0] = id + 1
+  g_next_id[0] = id + 1UL
   id
 }
+
+///|
+
+///|
+/// One link of the middleware chain.
+type Step = () -> Unit
 
 ///|
 priv struct RequestState {
@@ -33,6 +155,9 @@ priv struct RequestState {
   res : Res
   app : App
   mut body_reader : ((String, Bool) -> Unit)?
+  // The middleware chain's `steps` cell, kept only so `release_request` can
+  // break the reference cycle described there.
+  mut chain : Array[Step]?
 }
 
 // ---------- Request ----------
@@ -60,7 +185,11 @@ pub struct Req {
   priv request_id : UInt64
   priv app_ref : App
   priv settings : Map[String, String]
-  priv headers : Map[String, String]
+  // All request headers as one `Bytes` blob of `name\0value\0` pairs. A
+  // per-header array of `String`s cost two allocations and two FFI calls per
+  // header on every request, even for handlers that read none; the blob is a
+  // single copy and values are decoded only when a handler asks for one.
+  priv headers_raw : Bytes
   priv http_method : String
   priv mut url_path : String
   priv mut base_url : String
@@ -69,15 +198,17 @@ pub struct Req {
   priv mut base_params : Array[(String, String)]
   priv mut route_info : RouteInfo?
   priv mut next : Next?
-  priv query_params : Map[String, String]
+  priv mut query_params : Map[String, String]?
   priv query_raw : String
   priv mut body_text : String
   priv mut body_bytes : Bytes
   priv mut body_json : Json?
   priv mut body_form : Map[String, String]
   priv mut body_form_json : Json?
-  priv cookies : Map[String, String]
-  priv remote_ip : String
+  priv mut cookies : Map[String, String]?
+  // Resolved on first use: `getpeername` is a syscall, and a handler that
+  // never asks for the address (the common case) should not pay for it.
+  priv mut remote_ip_cache : String?
   priv mut aborted : Bool
   priv locals : Map[String, String]
   priv protocol : String
@@ -142,6 +273,23 @@ pub fn Req::app(self : Req) -> App {
 }
 
 ///|
+/// The remote address of the request, like `req.socket.remoteAddress`. The
+/// value is fetched from the socket the first time it is needed and cached for
+/// the rest of the request.
+fn Req::remote_ip(self : Req) -> String {
+  match self.remote_ip_cache {
+    Some(ip) => ip
+    None => {
+      let ip = utf8_string(
+        uwb_res_remote_address(self.uws_res, self.ssl_flag()),
+      )
+      self.remote_ip_cache = Some(ip)
+      ip
+    }
+  }
+}
+
+///|
 /// The remote TCP port of the request, like `req.socket.remotePort`.
 pub fn Req::remote_port(self : Req) -> Int32 {
   uwb_res_remote_port(self.uws_res, self.ssl_flag())
@@ -196,7 +344,7 @@ pub fn Req::params(self : Req) -> Map[String, String] {
 ///|
 /// Returns a parsed query parameter, or `""` when it is not present.
 pub fn Req::query_param(self : Req, name : String) -> String {
-  match self.query_params.get(name) {
+  match self.query_map_value().get(name) {
     Some(value) => value
     None => ""
   }
@@ -204,7 +352,22 @@ pub fn Req::query_param(self : Req, name : String) -> String {
 
 ///|
 pub fn Req::query_map(self : Req) -> Map[String, String] {
-  self.query_params
+  self.query_map_value()
+}
+
+///|
+/// The parsed query string, built on first use. Parsing every request up
+/// front cost a `Map` allocation even when the handler never looked at the
+/// query.
+fn Req::query_map_value(self : Req) -> Map[String, String] {
+  match self.query_params {
+    Some(map) => map
+    None => {
+      let map = parse_query(self.query_raw)
+      self.query_params = Some(map)
+      map
+    }
+  }
 }
 
 ///|
@@ -220,10 +383,73 @@ pub fn Req::raw_query(self : Req) -> String {
 
 ///|
 pub fn Req::header(self : Req, name : String) -> String {
-  match self.headers.get(name.to_lower()) {
-    Some(value) => value
+  match find_header_value(self.headers_raw, name) {
+    Some((start, len)) =>
+      utf8_string(copy_byte_range(self.headers_raw, start, len))
     None => ""
   }
+}
+
+///|
+/// Byte-wise search of the `name\0value\0` header blob. Names are compared
+/// ASCII case-insensitively without materialising either side as a `String`.
+fn find_header_value(blob : Bytes, name : String) -> (Int32, Int32)? {
+  let total = blob.length()
+  let name_len = name.length()
+  let mut pos = 0
+  let mut found : (Int32, Int32)? = None
+  while pos < total {
+    let name_start = pos
+    while pos < total && blob.unsafe_get(pos).to_int() != 0 {
+      pos = pos + 1
+    }
+    let this_name_len = pos - name_start
+    pos = pos + 1
+    let value_start = pos
+    while pos < total && blob.unsafe_get(pos).to_int() != 0 {
+      pos = pos + 1
+    }
+    let value_len = pos - value_start
+    pos = pos + 1
+    if this_name_len == name_len {
+      let mut index = 0
+      let mut same = true
+      while index < name_len {
+        let mut left = blob.unsafe_get(name_start + index).to_int()
+        let mut right = name.unsafe_get(index).to_int()
+        if left != right {
+          if left >= 65 && left <= 90 {
+            left = left + 32
+          }
+          if right >= 65 && right <= 90 {
+            right = right + 32
+          }
+          if left != right {
+            same = false
+            break
+          }
+        }
+        index = index + 1
+      }
+      if same {
+        // Last match wins, matching the previous map-based behaviour.
+        found = Some((value_start, value_len))
+      }
+    }
+  }
+  found
+}
+
+///|
+/// Copies `len` bytes starting at `start` into a fresh `Bytes`.
+fn copy_byte_range(source : Bytes, start : Int32, len : Int32) -> Bytes {
+  let out : Array[Byte] = Array::make(len, b'\x00')
+  let mut index = 0
+  while index < len {
+    out[index] = source.unsafe_get(start + index)
+    index = index + 1
+  }
+  Bytes::from_array(out)
 }
 
 ///|
@@ -270,7 +496,7 @@ pub fn Req::form_map(self : Req) -> Map[String, String] {
 ///|
 /// Returns a request cookie value, or `""` when it is not present.
 pub fn Req::cookie(self : Req, name : String) -> String {
-  match self.cookies.get(name) {
+  match self.cookie_map_value().get(name) {
     Some(value) => value
     None => ""
   }
@@ -278,7 +504,20 @@ pub fn Req::cookie(self : Req, name : String) -> String {
 
 ///|
 pub fn Req::cookies(self : Req) -> Map[String, String] {
-  self.cookies
+  self.cookie_map_value()
+}
+
+///|
+/// The parsed `Cookie` header, built on first use.
+fn Req::cookie_map_value(self : Req) -> Map[String, String] {
+  match self.cookies {
+    Some(map) => map
+    None => {
+      let map = parse_cookies(self.header("cookie"))
+      self.cookies = Some(map)
+      map
+    }
+  }
 }
 
 ///|
@@ -308,7 +547,7 @@ pub fn Req::ips(self : Req) -> Array[String] {
 ///|
 /// `[socket, ...X-Forwarded-For reversed]`, closest hop first.
 fn Req::forwarded_addresses(self : Req) -> Array[String] {
-  let result : Array[String] = [self.remote_ip]
+  let result : Array[String] = [self.remote_ip()]
   let forwarded = self.header("x-forwarded-for")
   if forwarded != "" {
     let hops : Array[String] = []
@@ -434,7 +673,7 @@ fn is_uniquelocal(address : String) -> Bool {
 /// Returns the request protocol: `"http"` or `"https"`, honoring
 /// `X-Forwarded-Proto` when the client is trusted.
 pub fn Req::protocol(self : Req) -> String {
-  if trusted_proxy(self.setting("trust proxy"), self.remote_ip, 0) {
+  if trusted_proxy(self.setting("trust proxy"), self.remote_ip(), 0) {
     let forwarded = self.header("x-forwarded-proto")
     if forwarded != "" {
       for raw in forwarded.split(",") {
@@ -457,7 +696,7 @@ pub fn Req::secure(self : Req) -> Bool {
 ///|
 /// The `Host` header (or `X-Forwarded-Host` for trusted clients), `req.host`.
 pub fn Req::host(self : Req) -> String {
-  if trusted_proxy(self.setting("trust proxy"), self.remote_ip, 0) {
+  if trusted_proxy(self.setting("trust proxy"), self.remote_ip(), 0) {
     let forwarded = self.header("x-forwarded-host")
     if forwarded != "" {
       for raw in forwarded.split(",") {
@@ -672,7 +911,7 @@ pub fn Req::fresh(self : Req) -> Bool {
   if cache_control != "" && cache_control.to_lower().contains("no-cache") {
     return false
   }
-  let res = match g_requests.get(self.request_id) {
+  let res = match request_slot_get(self.request_id) {
     Some(state) => state.res
     None => return false
   }
@@ -741,7 +980,7 @@ pub fn Req::signed_cookie(self : Req, name : String) -> String {
 pub fn Req::signed_cookies(self : Req) -> Map[String, String] {
   let secret = self.setting("cookie secret")
   let out : Map[String, String] = Map([])
-  for pair in self.cookies.iter() {
+  for pair in self.cookie_map_value().iter() {
     let value = pair.1
     if value.has_prefix("s:") {
       match unsign_cookie(secret, value[2:].to_owned()) {
@@ -847,13 +1086,34 @@ pub fn Res::status(self : Res, code : Int32) -> Res {
 
 ///|
 pub fn Res::set(self : Res, name : String, value : String) -> Res {
-  let value = if name.to_lower() == "content-type" {
+  let value = if eq_header_name(name, "content-type") {
     mime_content_type(value)
   } else {
     value
   }
-  self.remove_header(name)
-  self.headers.push((name, value))
+  // Overwrite the existing entry in place instead of removing and re-pushing
+  // it, which allocated a scratch array on every `res.set`.
+  let mut found = false
+  let mut duplicate = false
+  let mut index = 0
+  let len = self.headers.length()
+  while index < len {
+    if eq_header_name(self.headers[index].0, name) {
+      if found {
+        duplicate = true
+      } else {
+        self.headers[index] = (name, value)
+        found = true
+      }
+    }
+    index = index + 1
+  }
+  if duplicate {
+    self.remove_header(name)
+    self.headers.push((name, value))
+  } else if !found {
+    self.headers.push((name, value))
+  }
   self
 }
 
@@ -877,10 +1137,9 @@ pub fn Res::type_(self : Res, content_type : String) -> Res {
 
 ///|
 pub fn Res::header(self : Res, name : String) -> String {
-  let wanted = name.to_lower()
   let mut found = ""
   for pair in self.headers {
-    if pair.0.to_lower() == wanted {
+    if eq_header_name(pair.0, name) {
       found = pair.1
     }
   }
@@ -893,17 +1152,22 @@ fn Res::has_header(self : Res, name : String) -> Bool {
 }
 
 ///|
+/// Drops every header matching `name`, compacting the array in place. The
+/// previous version rebuilt a fresh array and copied the survivors into it.
 fn Res::remove_header(self : Res, name : String) -> Unit {
-  let wanted = name.to_lower()
-  let kept : Array[(String, String)] = []
-  for pair in self.headers {
-    if pair.0.to_lower() != wanted {
-      kept.push(pair)
+  let mut write = 0
+  let mut read = 0
+  let len = self.headers.length()
+  while read < len {
+    let pair = self.headers[read]
+    if !eq_header_name(pair.0, name) {
+      self.headers[write] = pair
+      write = write + 1
     }
+    read = read + 1
   }
-  self.headers.clear()
-  for pair in kept {
-    self.headers.push(pair)
+  while self.headers.length() > write {
+    ignore(self.headers.pop())
   }
 }
 
@@ -948,7 +1212,7 @@ fn Res::setting(self : Res, key : String) -> String {
 
 ///|
 fn Res::request(self : Res) -> Req? {
-  match g_requests.get(self.request_id) {
+  match request_slot_get(self.request_id) {
     Some(state) => Some(state.req)
     None => None
   }
@@ -956,7 +1220,7 @@ fn Res::request(self : Res) -> Req? {
 
 ///|
 fn Res::application(self : Res) -> App? {
-  match g_requests.get(self.request_id) {
+  match request_slot_get(self.request_id) {
     Some(state) => Some(state.app)
     None => None
   }
@@ -979,7 +1243,10 @@ fn Res::request_fresh(self : Res) -> Bool {
 /// A weak ETag for in-memory bodies: `W/"<length>-<hash>"`, the shape used by
 /// the `etag` package that Express relies on.
 fn weak_etag(data : Bytes) -> String {
-  let digest = base64_encode(sha256_bytes(data)).replace_all(old="=", new="")
+  // `base64` of a 32-byte digest is 44 characters ending in `=`, and only the
+  // first 27 are kept, so the `=` never reaches the output -- dropping the
+  // `replace_all` pass removes a 44-character copy per response.
+  let digest = base64_encode(sha256_bytes(data))
   "W/\"" + data.length().to_string() + "-" + digest[:27].to_owned() + "\""
 }
 
@@ -1019,7 +1286,8 @@ fn Res::finish_bytes(self : Res, body : Bytes) -> Unit {
     release_request(self.request_id)
     return
   }
-  let is_head = match self.request() {
+  let req = self.request()
+  let is_head = match req {
     Some(req) => req.http_method() == "HEAD"
     None => false
   }
@@ -1857,7 +2125,29 @@ fn has_dotfile_segment(path : String) -> Bool {
 
 ///|
 fn release_request(request_id : UInt64) -> Unit {
-  g_requests.remove(request_id)
+  // The middleware chain is reference counted and contains cycles, which
+  // reference counting cannot reclaim: `dispatch_layers` stores its `step`
+  // closure into `steps[0]` while that closure captures `steps` (so
+  // `steps <-> step`), and `step` itself captures the request, the response
+  // and the layer list. `Req.next` similarly points at a `Next` whose closures
+  // capture the same objects. Left alone every request keeps its whole object
+  // graph alive for the life of the process (measured: ~1.6 KB per request, on
+  // every route, 404s included). Once the response ends the chain can no
+  // longer legitimately continue, so both links are dropped here.
+  match request_slot_get(request_id) {
+    Some(state) => {
+      state.req.next = None
+      match state.chain {
+        Some(steps) => {
+          steps[0] = g_noop_step
+          state.chain = None
+        }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  request_slot_clear(request_id)
 }
 
 // ---------- Middleware ----------
@@ -2661,7 +2951,7 @@ pub fn dispatch_body(
   _len : Int32,
   status : Int32,
 ) -> Unit {
-  match g_requests.get(request_id) {
+  match request_slot_get(request_id) {
     Some(state) => {
       if status == 0 {
         state.req.set_body_bytes(body)
@@ -2681,7 +2971,7 @@ pub fn dispatch_body(
 ///|
 /// Dispatches an abort notification to the pending request.
 pub fn dispatch_abort(request_id : UInt64) -> Unit {
-  match g_requests.get(request_id) {
+  match request_slot_get(request_id) {
     Some(state) => {
       state.req.mark_aborted()
       state.res.mark_aborted()
@@ -2696,24 +2986,13 @@ let g_shim_ready : Array[Bool] = [false]
 
 ///|
 fn start_request(app : App, uws_res : UwsRes) -> Unit {
-  let request_id = next_id()
+  let request_id = request_slot_reserve()
   let http_method = utf8_string(uwb_req_method()).to_upper()
   let url_path = utf8_string(uwb_req_url())
   let query_raw = utf8_string(uwb_req_query())
-  let headers : Map[String, String] = Map([])
-  let header_count = uwb_req_header_count()
-  let mut index = 0
-  while index < header_count {
-    headers.set(
-      utf8_string(uwb_req_header_name(index)).to_lower(),
-      utf8_string(uwb_req_header_value(index)),
-    )
-    index = index + 1
-  }
-  let cookie_header = match headers.get("cookie") {
-    Some(value) => value
-    None => ""
-  }
+  // One FFI call and one allocation for all headers, instead of two of each
+  // per header. Values are decoded only if a handler actually reads one.
+  let headers_raw = uwb_req_headers_blob()
   let ssl_flag : Int32 = if app.is_ssl { 1 } else { 0 }
   let original_url = if query_raw == "" {
     url_path
@@ -2725,7 +3004,7 @@ fn start_request(app : App, uws_res : UwsRes) -> Unit {
     request_id,
     app_ref: app,
     settings: app.settings,
-    headers,
+    headers_raw,
     http_method,
     url_path,
     base_url: "",
@@ -2734,15 +3013,15 @@ fn start_request(app : App, uws_res : UwsRes) -> Unit {
     base_params: [],
     route_info: None,
     next: None,
-    query_params: parse_query(query_raw),
+    query_params: None,
     query_raw,
     body_text: "",
     body_bytes: Bytes::make(0, b'\x00'),
     body_json: None,
     body_form: Map([]),
     body_form_json: None,
-    cookies: parse_cookies(cookie_header),
-    remote_ip: utf8_string(uwb_res_remote_address(uws_res, ssl_flag)),
+    cookies: None,
+    remote_ip_cache: None,
     aborted: false,
     locals: Map([]),
     protocol: if app.is_ssl {
@@ -2764,8 +3043,8 @@ fn start_request(app : App, uws_res : UwsRes) -> Unit {
     vary_headers: [],
     is_ssl: app.is_ssl,
   }
-  let state : RequestState = { req, res, app, body_reader: None, }
-  g_requests.set(request_id, state)
+  let state : RequestState = { req, res, app, body_reader: None, chain: None, }
+  request_slot_fill(request_id, state)
   uwb_res_on_aborted(uws_res, ssl_flag, request_id)
   dispatch(app, req, res)
 }
@@ -2778,7 +3057,7 @@ fn read_body(
   limit : Int32,
   reader : (String, Bool) -> Unit,
 ) -> Unit {
-  match g_requests.get(res.request_id) {
+  match request_slot_get(res.request_id) {
     Some(state) => {
       state.body_reader = Some(reader)
       let ssl_flag : Int32 = if res.is_ssl { 1 } else { 0 }
@@ -2807,7 +3086,11 @@ fn dispatch_layers(
   on_done : (DispatchState) -> Unit,
 ) -> Unit {
   let state = DispatchState::{ idx: 0, error: None, error_status: None, }
-  let steps : Array[() -> Unit] = [fn() { () }]
+  let steps : Array[Step] = [g_noop_step]
+  match request_slot_get(req.request_id) {
+    Some(state) => state.chain = Some(steps)
+    None => ()
+  }
   let step = fn() {
     let mut running = true
     while running && state.idx < layers.length() {
@@ -2957,6 +3240,13 @@ fn run_param_callbacks(
   dispatch_step : () -> Unit,
   then_fn : () -> Unit,
 ) -> Unit {
+  // Fast path: no `param` callbacks are registered, so nothing can run before
+  // the handler. Skipping the cursor/steps/Next scaffolding below avoids two
+  // array allocations and a closure per request on the common route.
+  if param_callbacks.length() == 0 {
+    then_fn()
+    return
+  }
   let cursor : Array[Int32] = [0]
   let steps : Array[() -> Unit] = [fn() { () }]
   let step_params = fn() {

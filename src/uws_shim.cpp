@@ -46,12 +46,25 @@ uwb_ws_message_cb g_ws_message_cb = nullptr;
 uwb_ws_close_cb g_ws_close_cb = nullptr;
 uint64_t g_next_conn_id = 1;
 
-/* Snapshot of the request currently being dispatched. µWebSockets runs one
- * handler at a time, so a single staging area is enough. */
-std::string g_method;
-std::string g_url;
-std::string g_query;
-std::vector<std::pair<std::string, std::string>> g_headers;
+/* The request currently being dispatched. µWebSockets keeps the request alive
+ * for the whole handler call, and every MoonBit accessor below is called
+ * synchronously from inside that call, so the request is read in place: no
+ * method/url/query/header is copied. The header list holds views into the
+ * request's own buffer and keeps its capacity between requests, so after the
+ * first few requests filling it performs no allocation at all. */
+uWS::HttpRequest *g_req = nullptr;
+
+/* Reused scratch for the header blob ("name\0value\0"...). Keeps its capacity
+ * between requests, so after the first few requests building it does not
+ * allocate. */
+std::string g_header_blob;
+
+/* Read a string_view as MoonBit bytes; empty and safe when no request is live. */
+moonbit_bytes_t make_bytes(std::string_view view);
+
+void stage_request(uWS::HttpRequest *req) { g_req = req; }
+
+void unstage_request() { g_req = nullptr; }
 
 moonbit_bytes_t make_bytes(const char *data, size_t len) {
   auto *out = moonbit_make_bytes_raw(static_cast<int32_t>(len));
@@ -72,16 +85,11 @@ std::string_view view_of(moonbit_bytes_t bytes, int32_t len) {
 
 /* Handlers for plain (non-SSL) app */
 void handle_request_plain(uWS::HttpResponse<false> *res, uWS::HttpRequest *req, uint64_t app_id) {
-  g_method.assign(req->getMethod());
-  g_url.assign(req->getUrl());
-  g_query.assign(req->getQuery());
-  g_headers.clear();
-  for (auto [key, value] : *req) {
-    g_headers.emplace_back(std::string(key), std::string(value));
-  }
+  stage_request(req);
   if (g_req_cb != nullptr) {
     g_req_cb(app_id, res, req);
   }
+  unstage_request();
 }
 
 void handle_ws_open_plain(WebSocketPlain *ws, int32_t route_id) {
@@ -109,16 +117,11 @@ void handle_ws_close_plain(WebSocketPlain *ws, int code, std::string_view messag
 
 /* Handlers for SSL app */
 void handle_request_ssl(uWS::HttpResponse<true> *res, uWS::HttpRequest *req, uint64_t app_id) {
-  g_method.assign(req->getMethod());
-  g_url.assign(req->getUrl());
-  g_query.assign(req->getQuery());
-  g_headers.clear();
-  for (auto [key, value] : *req) {
-    g_headers.emplace_back(std::string(key), std::string(value));
-  }
+  stage_request(req);
   if (g_req_cb != nullptr) {
     g_req_cb(app_id, res, req);
   }
+  unstage_request();
 }
 
 void handle_ws_open_ssl(WebSocketSSL *ws, int32_t route_id) {
@@ -304,22 +307,30 @@ void uwb_app_close(void *app) {
   }
 }
 
-moonbit_bytes_t uwb_req_method(void) { return make_bytes(g_method); }
-
-moonbit_bytes_t uwb_req_url(void) { return make_bytes(g_url); }
-
-moonbit_bytes_t uwb_req_query(void) { return make_bytes(g_query); }
-
-int32_t uwb_req_header_count(void) {
-  return static_cast<int32_t>(g_headers.size());
+moonbit_bytes_t uwb_req_method(void) {
+  return g_req != nullptr ? make_bytes(g_req->getMethod()) : make_bytes("", 0);
 }
 
-moonbit_bytes_t uwb_req_header_name(int32_t index) {
-  return make_bytes(g_headers[static_cast<size_t>(index)].first);
+moonbit_bytes_t uwb_req_url(void) {
+  return g_req != nullptr ? make_bytes(g_req->getUrl()) : make_bytes("", 0);
 }
 
-moonbit_bytes_t uwb_req_header_value(int32_t index) {
-  return make_bytes(g_headers[static_cast<size_t>(index)].second);
+moonbit_bytes_t uwb_req_query(void) {
+  return g_req != nullptr ? make_bytes(g_req->getQuery()) : make_bytes("", 0);
+}
+
+moonbit_bytes_t uwb_req_headers_blob(void) {
+  if (g_req == nullptr) {
+    return make_bytes("", 0);
+  }
+  g_header_blob.clear();
+  for (auto [key, value] : *g_req) {
+    g_header_blob.append(key.data(), key.size());
+    g_header_blob.push_back('\0');
+    g_header_blob.append(value.data(), value.size());
+    g_header_blob.push_back('\0');
+  }
+  return make_bytes(g_header_blob);
 }
 
 /* Every response call must dispatch on the app's TLS mode: µWebSockets
