@@ -194,7 +194,9 @@ pub struct Req {
   priv mut url_path : String
   priv mut base_url : String
   priv original_url : String
-  priv mut params : Map[String, String]
+  // Materialised on first write/read: a route with no params (every static
+  // route) should not allocate an empty map it will never look at.
+  priv mut params : Map[String, String]?
   priv mut base_params : Array[(String, String)]
   priv mut route_info : RouteInfo?
   priv mut next : Next?
@@ -203,14 +205,14 @@ pub struct Req {
   priv mut body_text : String
   priv mut body_bytes : Bytes
   priv mut body_json : Json?
-  priv mut body_form : Map[String, String]
+  priv mut body_form : Map[String, String]?
   priv mut body_form_json : Json?
   priv mut cookies : Map[String, String]?
   // Resolved on first use: `getpeername` is a syscall, and a handler that
   // never asks for the address (the common case) should not pay for it.
   priv mut remote_ip_cache : String?
   priv mut aborted : Bool
-  priv locals : Map[String, String]
+  priv mut locals : Map[String, String]?
   priv protocol : String
 }
 
@@ -325,7 +327,7 @@ fn Req::set_route(self : Req, value : RouteInfo?) -> Unit {
 ///|
 /// Returns a route parameter, or `""` when it is not present.
 pub fn Req::param(self : Req, name : String) -> String {
-  match self.params.get(name) {
+  match self.param_map_value().get(name) {
     Some(value) => value
     None => ""
   }
@@ -333,12 +335,21 @@ pub fn Req::param(self : Req, name : String) -> String {
 
 ///|
 pub fn Req::has_param(self : Req, name : String) -> Bool {
-  self.params.contains(name)
+  self.param_map_value().contains(name)
 }
 
 ///|
 pub fn Req::params(self : Req) -> Map[String, String] {
-  self.params
+  self.param_map_value()
+}
+
+///|
+/// The params map, allocating it only when a caller actually asks for it.
+fn Req::param_map_value(self : Req) -> Map[String, String] {
+  match self.params {
+    Some(map) => map
+    None => Map([])
+  }
 }
 
 ///|
@@ -482,7 +493,7 @@ pub fn Req::form_json(self : Req) -> Json? {
 
 ///|
 pub fn Req::form(self : Req, name : String) -> String {
-  match self.body_form.get(name) {
+  match self.form_map_value().get(name) {
     Some(value) => value
     None => ""
   }
@@ -490,7 +501,15 @@ pub fn Req::form(self : Req, name : String) -> String {
 
 ///|
 pub fn Req::form_map(self : Req) -> Map[String, String] {
-  self.body_form
+  self.form_map_value()
+}
+
+///|
+fn Req::form_map_value(self : Req) -> Map[String, String] {
+  match self.body_form {
+    Some(map) => map
+    None => Map([])
+  }
 }
 
 ///|
@@ -1014,13 +1033,18 @@ pub fn Req::set_json_body(self : Req, value : Json?) -> Unit {
 
 ///|
 pub fn Req::set_form(self : Req, value : Map[String, String]) -> Unit {
-  self.body_form = value
+  self.body_form = Some(value)
 }
 
 ///|
 /// Replaces the route params. Params captured by a parent router are merged
 /// in first, so mounted routers keep `req.params` populated.
 fn Req::set_params(self : Req, value : Array[(String, String)]) -> Unit {
+  if self.base_params.length() == 0 && value.length() == 0 {
+    // Static route: nothing to merge, so leave `params` unallocated.
+    self.params = None
+    return
+  }
   let map : Map[String, String] = Map([])
   for pair in self.base_params {
     map.set(pair.0, pair.1)
@@ -1028,7 +1052,7 @@ fn Req::set_params(self : Req, value : Array[(String, String)]) -> Unit {
   for pair in value {
     map.set(pair.0, pair.1)
   }
-  self.params = map
+  self.params = Some(map)
 }
 
 ///|
@@ -1039,7 +1063,14 @@ fn Req::mark_aborted(self : Req) -> Unit {
 ///|
 /// Returns the request-scoped local variables map.
 pub fn Req::locals(self : Req) -> Map[String, String] {
-  self.locals
+  match self.locals {
+    Some(map) => map
+    None => {
+      let map : Map[String, String] = Map([])
+      self.locals = Some(map)
+      map
+    }
+  }
 }
 
 ///|
@@ -1073,7 +1104,7 @@ pub struct Res {
   priv mut ended : Bool
   priv mut aborted : Bool
   priv mut headers_sent : Bool
-  priv locals : Map[String, String]
+  priv mut locals : Map[String, String]?
   priv vary_headers : Array[String]
   priv is_ssl : Bool
 }
@@ -1861,7 +1892,14 @@ fn Res::mark_aborted(self : Res) -> Unit {
 ///|
 /// Returns the response-scoped local variables map.
 pub fn Res::locals(self : Res) -> Map[String, String] {
-  self.locals
+  match self.locals {
+    Some(map) => map
+    None => {
+      let map : Map[String, String] = Map([])
+      self.locals = Some(map)
+      map
+    }
+  }
 }
 
 ///|
@@ -2073,7 +2111,7 @@ pub fn Res::render(self : Res, view : String, locals? : Json) -> Unit {
       return
     }
   }
-  let options = merged_view_options(app, self.locals, locals)
+  let options = merged_view_options(app, self.locals(), locals)
   let html = app.render(view, locals=options) catch {
     error => {
       self.status(500).send("View render failed: " + error.to_string())
@@ -3060,7 +3098,7 @@ fn start_request(app : App, uws_res : UwsRes) -> Unit {
     url_path,
     base_url: "",
     original_url,
-    params: Map([]),
+    params: None,
     base_params: [],
     route_info: None,
     next: None,
@@ -3069,12 +3107,12 @@ fn start_request(app : App, uws_res : UwsRes) -> Unit {
     body_text: "",
     body_bytes: Bytes::make(0, b'\x00'),
     body_json: None,
-    body_form: Map([]),
+    body_form: None,
     body_form_json: None,
     cookies: None,
     remote_ip_cache: None,
     aborted: false,
-    locals: Map([]),
+    locals: None,
     protocol: if app.is_ssl {
       "https"
     } else {
@@ -3090,7 +3128,7 @@ fn start_request(app : App, uws_res : UwsRes) -> Unit {
     ended: false,
     aborted: false,
     headers_sent: false,
-    locals: Map([]),
+    locals: None,
     vary_headers: [],
     is_ssl: app.is_ssl,
   }
@@ -3247,7 +3285,10 @@ fn mount_router(
   req.url_path = mount_relative(prefix, req.path())
   req.base_url = req.base_url + prefix
   req.base_params = if router.merge_params {
-    saved_params.to_array()
+    match saved_params {
+      Some(map) => map.to_array()
+      None => []
+    }
   } else {
     []
   }
@@ -3264,7 +3305,7 @@ fn mount_router(
 
 ///|
 fn make_next(state : DispatchState, step : () -> Unit) -> Next {
-  { state, step }
+  { state, step, }
 }
 
 ///|
@@ -3295,7 +3336,7 @@ fn run_param_callbacks(
       let (name, callback) = param_callbacks[i]
       cursor[0] = i + 1
       if req.has_param(name) {
-        let next : Next = { state, step: dispatch_step }
+        let next : Next = { state, step: dispatch_step, }
         callback(req, next)
         return
       }
