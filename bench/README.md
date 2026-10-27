@@ -120,8 +120,8 @@ taskset -c 1 ./bench/loadgen 30000 64 5 16 /text   # port conns secs inflight pa
 
 ## Optimizing the framework (done)
 
-Two passes of changes in `express.mbt` / `crypto.mbt` removed the per-request
-work listed above:
+Three passes of changes in `express.mbt` / `path.mbt` / `crypto.mbt` removed the
+per-request work listed above:
 
 - request headers arrive as a single `Bytes` blob (`name\0value\0`) instead of
   `Array[(String, String)]`, so there is no per-header FFI crossing, allocation
@@ -148,6 +148,19 @@ work listed above:
   `req.locals` / `res.locals` are `Map?` until something reads them, which
   also stops `set_params` from rebuilding a map for routes with no params
   (-11.5%, 7 of 8 paired rounds).
+- **Static routes are matched without splitting the path.** `split_path` built
+  a view array, a `String` per piece (including the empty piece before the
+  leading slash) and the segment array, so `/text` paid four allocations to
+  compare four bytes -- once per layer tried. `match_static_path` walks the raw
+  path byte by byte for patterns with no slots or splats (returning `None` for
+  the rest), and dynamic routes now split once per request instead of once per
+  layer (-7.8%, 8 of 8). This dropped the whole middleware chain from ~1.05 us
+  to ~0.25 us.
+- **Smaller per-request allocations.** The method is no longer re-copied by
+  `to_upper` (methods arrive uppercase; the copy now only happens for a method
+  that is not), requests with no router parameters share one empty array, an
+  empty query is no longer decoded into an allocated `String`, and the
+  zero-length body is a shared `Bytes` (-7.7% and -1.9% in two steps).
 
 Two candidates were measured and **rejected**, both worth knowing:
 
@@ -161,8 +174,15 @@ Two candidates were measured and **rejected**, both worth knowing:
   crossings it removes. So `write_head`'s ~0.5 us is the `utf8_bytes` encode
   per name/value, not the crossings.
 
-Cumulative: **4.70 -> 2.69 us CPU per request (~1.75x)** at 16 in flight for
-the same 188-byte response, wire format unchanged throughout.
+Cumulative: **4.70 -> 2.52 us CPU per request (~1.9x)** at 16 in flight for
+the same 188-byte response, wire format unchanged throughout. The decomposition
+moved with it: the middleware chain is no longer the expensive part, and
+~1.33 us of the remaining ~1.7 us above the bare C++ handler is the request
+decode, the `Req`/`Res` construction and the response build.
+
+Reusing the `Req`/`Res` records across requests would remove roughly another
+0.2 us, and is deliberately not done: a handler that keeps `req` or `res` past
+its response would then observe a different request.
 
 The wire output is byte-for-byte identical (status lines, headers, `ETag`
 values and bodies for `/text`, `/json`, a query string, a 404, `HEAD` and a

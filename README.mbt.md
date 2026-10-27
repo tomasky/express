@@ -415,7 +415,7 @@ pinned core, 64 connections):
 
 | Server | 1 in flight | 16 in flight |
 | --- | ---: | ---: |
-| **express** | ~12 µs | **~2.7 µs** |
+| **express** | ~12 µs | **~2.5 µs** |
 | moonbitlang/async | ~16 µs | ~13 µs |
 | raw C++ µWebSockets | ~3 µs | ~0.9 µs |
 
@@ -430,7 +430,7 @@ an ETag memo that skips the per-response SHA-256 when the body repeats, an
 allocation-free path match, a `Next` that avoids closures, and `params` /
 `form` / `locals` that are only allocated when read. Together with a fixed
 per-request memory leak (RSS was growing 1.6 KB/request; now flat at 7.2 MB),
-per-request CPU dropped from ~40 µs to **~2.7 µs** pipelined.
+per-request CPU dropped from ~40 µs to **~2.5 µs** pipelined.
 
 Full methodology, per-request cost breakdown and what is still on the table:
 [`bench/benchmark.md`](bench/benchmark.md).

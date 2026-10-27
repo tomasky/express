@@ -328,8 +328,55 @@ Two of those rows were reverted, and both are worth recording:
   removes. So `write_head`'s ~0.5 µs is the `utf8_bytes` encode of each
   name/value, not the crossings.
 
+### Third round: the chain stops being the expensive part
+
+A fresh ablation on that build (same harness, three rounds) split the
+remaining time as:
+
+| Build | µs/req | What it still does |
+| --- | ---: | --- |
+| full framework | 3.23 | everything |
+| `Req`/`Res` built, chain skipped | 2.18 | decode + response |
+| pure C++ handler | 0.95 | uWebSockets only |
+
+So the middleware chain still cost ~1.05 µs even after the `Next` and
+`to_lower` work. Re-reading `match_path` explained it: `split_path` builds
+a view array from `path.split("/")`, then calls `to_owned()` on every
+piece -- including the empty piece before the leading slash -- then builds
+the segment array. A static route like `/text` paid four allocations to
+compare four bytes, once per layer tried.
+
+Three changes, measured the same way:
+
+| Change | Paired result | Kept? |
+| --- | --- | --- |
+| static patterns matched against the raw path, no split | 2.64 -> 2.435 µs (-7.8%, 8/8) | yes |
+| method not re-copied by `to_upper`, empty `params` shared | 2.66 -> 2.455 µs (-7.7%, 8/8) | yes |
+| empty query not decoded, zero-length body shared | 2.57 -> 2.52 µs (-1.9%, 7/8, 1 tie) | yes |
+
+`PathPattern::match_static_path` walks the raw path byte by byte for any
+pattern with no slots or splats and returns `None` for the rest, so dynamic
+routes fall back to the old code; those now split the path **once per
+request** instead of once per layer, cached on the request and dropped when
+`mount_relative` rewrites `url_path`.
+
+Matching semantics were checked case by case against the previous build:
+`/text`, `/TEXT`, `/text/`, `/text//`, `//text` all match; `/tex`, `/texts`,
+`/text/x` are 404. A lowercase method (`-X get`) is still accepted.
+
+That moved the decomposition substantially (three rounds each):
+
+| Build | µs/req | Implied cost |
+| --- | ---: | --- |
+| full framework | 2.42 | — |
+| `Req`/`Res` built, chain skipped | 2.17 | chain ~**0.25 µs** |
+| pure C++ handler | 0.84 | decode + build + respond ~**1.33 µs** |
+
+The chain is no longer the dominant cost -- it went from ~1.05 µs to
+~0.25 µs. What is left is the request/response work itself.
+
 Cumulative, this build versus the one before the pipelining-16 work:
-**4.70 -> 2.69 µs CPU per request** (~1.75x) for the same 188-byte response,
+**4.70 -> 2.52 µs CPU per request** (~1.9x) for the same 188-byte response,
 with the wire format unchanged throughout.
 
 ## Memory: a per-request reference cycle
@@ -409,36 +456,34 @@ order alternated). The split is not the same, though:
   shared VM the same binaries have measured 6-50 µs across sessions. The two
   effects cancel, which is why the totals match while userspace does not.
 
-What is left to try, ordered by what the pipelining-16 ablations say it is
-worth (they were the only measurements that separated the parts, because at
-pipelining 1 the client hid most of the framework's work):
+What is left, ordered by the third-round decomposition rather than by the
+older pipelining-16 ablations (the composition changed enough that the old
+ranking no longer holds):
 
-1. **ETag for non-repeating bodies: ~1.5 µs.** The memo handles repeated
-   bodies; a handler that generates a unique body per request still pays the
-   full SHA-256. Inherent to pure-MoonBit SHA-256 -- the options are a faster
-   hash (changes the tag value) or handlers supplying their own `ETag`.
-2. **Middleware chain: ~1.1 µs, ~0.7 µs left.** The `to_lower` copies and
-   the three `Next` closures are gone; `dispatch_layers` still allocates the
-   `steps` array and the `Step` closure itself, and `Req.next` still holds a
-   fresh `Next` record per request -- pooling those is the next step.
-3. **Request decode / `Req`/`Res` construction / finalize: was ~1.8 µs.**
-   The three unused `Map`s are gone; what remains is the `Req`/`Res` records
-   themselves (a dozen `String`s and a `Bytes` each) plus `original_url`
-   concatenation. Pooling records across requests would remove the rest.
-4. **Header writes: ~0.5 µs, and the obvious fix does not work.** Batching
+1. **Header writes: ~0.5 µs, and the obvious fix does not work.** Batching
    the headers into one blob was implemented and measured *slower* (see
    above): the cost is `utf8_bytes` per name and value, not the FFI
-   crossings. Removing it means storing headers pre-encoded in `Res`, which
-   trades one encode per write for zero encodes per response.
-5. Benchmark with the load generator on a *separate* host. On this shared
-   2-vCPU box the same binary varies 2-4x between sessions, which is larger
-   than the effects being chased.
+   crossings. The remaining option is to store header values pre-encoded in
+   `Res`, trading one encode per write for zero encodes per response.
+2. **ETag for non-repeating bodies.** The memo makes repeating bodies free,
+   but a handler generating a unique body per request still pays the full
+   SHA-256. That is inherent to a pure-MoonBit hash: the options are a
+   faster hash (which changes the tag value) or handlers supplying their
+   own `ETag`.
+3. **Pooling the `Req`/`Res` records: ~0.2 µs, at a real cost.** Every
+   request still allocates a `Req`, a `Res`, their header arrays and the
+   request state. Reusing them per slot would remove that, but a handler
+   that keeps `req` or `res` past its response would then observe a
+   different request -- a semantic regression the current code does not
+   have, for an estimated 8%. It is deliberately **not** done.
+4. **Benchmark with the load generator on a *separate* host.** On this
+   shared 2-vCPU box the same binary varies 2-4x between sessions, which is
+   larger than the effects being chased.
 
 Beyond that the measurements hit the resolution of the box: a change worth
 less than ~3% cannot be told apart from host noise on these two shared
-vCPUs. The next cut large enough to measure cleanly is pooling the
-`Req`/`Res` records across requests (a dozen `String`s and a `Bytes` each),
-which is a bigger refactor than anything left above.
+vCPUs, and the last kept change was measured at 1.9% with a 7-of-8 win
+count precisely because the magnitude alone was not conclusive.
 
 ## Method
 
@@ -448,7 +493,7 @@ which is a bigger refactor than anything left above.
 - Runs are **serial**: one server process and one API under load at a time, so no two benchmarks overlap. Targets are rotated every round so slow drift in host load hits all three equally.
 - express and moonbitlang/async binaries are built with `moon build --release`; the raw baseline is built with `g++ -O3` and the same TLS flags as the express stub.
 - All runs had 0 errors and 0 non-2xx responses.
-- Date: 2026-10-27 11:02 UTC
+- Date: 2026-10-27 11:23 UTC
 
 ## Machine
 
