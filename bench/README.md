@@ -162,11 +162,21 @@ per-request work listed above:
   empty query is no longer decoded into an allocated `String`, and the
   zero-length body is a shared `Bytes` (-7.7% and -1.9% in two steps).
 
-Two candidates were measured and **rejected**, both worth knowing:
+- **The status line is encoded once per status code.** Only two headers are
+  buffered by the framework (uWebSockets adds `Date`, its server header and
+  `Content-Length`), so most of the response-header block was the status line,
+  built as `to_string` + a concatenation + `utf8_bytes`: three allocations per
+  response for the same dozen bytes (-9.6%, 8 of 8 paired rounds).
+
+Three candidates were measured and **rejected**, all worth knowing:
 
 - Replacing `set("ETag", ...)` with a direct `headers.push` after `has_header`
   had already proved the header absent looked like free money, but two
   independent sessions put the medians within noise, so it was reverted.
+- Interning the encoded header names and values through the same kind of cache
+  gave -2.8% with 7 of 8 rounds, then 1 of 3 on a re-run -- below what this box
+  can resolve -- and a response with many headers would scan the table on every
+  miss, so it was dropped.
 - Packing all response headers into one `name\0value\0` blob to cross the FFI
   once instead of five or six times was implemented and measured **slower**
   (2.87 vs 2.80 us over 8 paired rounds): building the blob needs a size pass
@@ -174,7 +184,7 @@ Two candidates were measured and **rejected**, both worth knowing:
   crossings it removes. So `write_head`'s ~0.5 us is the `utf8_bytes` encode
   per name/value, not the crossings.
 
-Cumulative: **4.70 -> 2.52 us CPU per request (~1.9x)** at 16 in flight for
+Cumulative: **4.70 -> ~2.5 us CPU per request (~1.9x)** at 16 in flight for
 the same 188-byte response, wire format unchanged throughout. The decomposition
 moved with it: the middleware chain is no longer the expensive part, and
 ~1.33 us of the remaining ~1.7 us above the bare C++ handler is the request

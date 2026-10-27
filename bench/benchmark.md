@@ -380,9 +380,33 @@ That moved the decomposition substantially (three rounds each):
 The chain is no longer the dominant cost -- it went from ~1.05 µs to
 ~0.25 µs. What is left is the request/response work itself.
 
+### Fourth round: the status line
+
+The response header block was still the largest single item, so a real
+response was dumped and read rather than guessed at: only **two** headers
+are buffered by the framework (`Content-Type` and `ETag`) -- uWebSockets
+adds `Date`, its server header and `Content-Length` itself. What was left
+was therefore the status line, built as `status_code.to_string()`, a
+concatenation with the reason phrase, then `utf8_bytes`: three allocations
+per response for the same dozen bytes.
+
+| Change | Paired result | Kept? |
+| --- | --- | --- |
+| status line encoded once per status code and cached | 2.82 -> 2.55 µs (-9.6%, 8/8) | yes |
+| header names and values interned through the same kind of cache | 2.465 -> 2.395 µs (-2.8%, 7/8) then 1/3 on a re-run | **no**, reverted |
+
+The header intern table is the third reverted candidate, and it fails the
+same way as the first: a 7-of-8 win at -2.8% did not survive a second
+session (1 of 3), which is exactly the size this box cannot resolve. It
+also had a real downside -- a response with many headers would scan the
+whole table on every miss -- so it was dropped rather than kept on a
+favourable first reading.
+
 Cumulative, this build versus the one before the pipelining-16 work:
-**4.70 -> 2.52 µs CPU per request** (~1.9x) for the same 188-byte response,
-with the wire format unchanged throughout.
+**4.70 -> ~2.5 µs CPU per request** (~1.9x) for the same 188-byte response,
+with the wire format unchanged throughout. Measured directly in one
+session against the build that closed the previous campaign (`182d282`):
+3.72 -> 2.48 µs, -33%, faster in 3 of 3 rounds.
 
 ## Memory: a per-request reference cycle
 
@@ -465,11 +489,13 @@ What is left, ordered by the third-round decomposition rather than by the
 older pipelining-16 ablations (the composition changed enough that the old
 ranking no longer holds):
 
-1. **Header writes: ~0.5 µs, and the obvious fix does not work.** Batching
-   the headers into one blob was implemented and measured *slower* (see
-   above): the cost is `utf8_bytes` per name and value, not the FFI
-   crossings. The remaining option is to store header values pre-encoded in
-   `Res`, trading one encode per write for zero encodes per response.
+1. **The two remaining header encodes.** Batching the headers into one
+   blob was measured *slower* and interned header strings did not survive a
+   re-measurement (both above), so what is left of the response block is one
+   `utf8_bytes` per buffered header name and value -- four allocations for
+   the benchmark response, most of it the `ETag` value being re-encoded.
+   Plausibly worth ~0.1-0.2 µs, i.e. at the edge of what this box can
+   resolve.
 2. **ETag for non-repeating bodies.** The memo makes repeating bodies free,
    but a handler generating a unique body per request still pays the full
    SHA-256. That is inherent to a pure-MoonBit hash: the options are a
@@ -498,7 +524,7 @@ count precisely because the magnitude alone was not conclusive.
 - Runs are **serial**: one server process and one API under load at a time, so no two benchmarks overlap. Targets are rotated every round so slow drift in host load hits all three equally.
 - express and moonbitlang/async binaries are built with `moon build --release`; the raw baseline is built with `g++ -O3` and the same TLS flags as the express stub.
 - All runs had 0 errors and 0 non-2xx responses.
-- Date: 2026-10-27 11:23 UTC
+- Date: 2026-10-27 11:41 UTC
 
 ## Machine
 
