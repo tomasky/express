@@ -3113,6 +3113,11 @@ let g_shim_ready : Array[Bool] = [false]
 let g_no_params : Array[(String, String)] = []
 
 ///|
+/// Shared zero-length body for requests that never carry one. `body_bytes` is
+/// only ever replaced, never written through, so one instance is enough.
+let g_empty_bytes : Bytes = Bytes::make(0, b'\x00')
+
+///|
 /// Whether every character is an ASCII uppercase letter, without allocating.
 fn is_upper_ascii(text : String) -> Bool {
   let len = text.length()
@@ -3140,7 +3145,14 @@ fn start_request(app : App, uws_res : UwsRes) -> Unit {
     raw_method.to_upper()
   }
   let url_path = utf8_string(uwb_req_url())
-  let query_raw = utf8_string(uwb_req_query())
+  // `utf8_string` allocates even for the empty query string, which is the
+  // common case; only decode when there is something to decode.
+  let query_blob = uwb_req_query()
+  let query_raw = if query_blob.length() == 0 {
+    ""
+  } else {
+    utf8_string(query_blob)
+  }
   // One FFI call and one allocation for all headers, instead of two of each
   // per header. Values are decoded only if a handler actually reads one.
   let headers_raw = uwb_req_headers_blob()
@@ -3167,7 +3179,7 @@ fn start_request(app : App, uws_res : UwsRes) -> Unit {
     query_params: None,
     query_raw,
     body_text: "",
-    body_bytes: Bytes::make(0, b'\x00'),
+    body_bytes: g_empty_bytes,
     body_json: None,
     body_form: None,
     body_form_json: None,
