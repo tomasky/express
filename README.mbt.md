@@ -415,7 +415,7 @@ pinned core, 64 connections):
 
 | Server | 1 in flight | 16 in flight |
 | --- | ---: | ---: |
-| **express** | ~12 µs | **~3.7 µs** |
+| **express** | ~12 µs | **~2.7 µs** |
 | moonbitlang/async | ~16 µs | ~13 µs |
 | raw C++ µWebSockets | ~3 µs | ~0.9 µs |
 
@@ -424,12 +424,13 @@ Throughput follows the same ordering (express ~54k req/s at one in flight and
 a factor of a few, never an order of magnitude, and express is faster than
 MoonBit's own HTTP server in every column.
 
-Three measured optimization passes live in the code and are all wire-format
-identical: one `Bytes` blob for request headers, a slot table for requests,
-lazy `remote_ip`, and — the biggest single win — an ETag memo that skips the
-per-response SHA-256 when the body repeats. Together with a fixed per-request
-memory leak (RSS was growing 1.6 KB/request; now flat at 7.2 MB), per-request
-CPU dropped from ~40 µs to ~3.7 µs pipelined.
+Every optimization in the code is measured and wire-format identical: one
+`Bytes` blob for request headers, a slot table for requests, lazy `remote_ip`,
+an ETag memo that skips the per-response SHA-256 when the body repeats, an
+allocation-free path match, a `Next` that avoids closures, and `params` /
+`form` / `locals` that are only allocated when read. Together with a fixed
+per-request memory leak (RSS was growing 1.6 KB/request; now flat at 7.2 MB),
+per-request CPU dropped from ~40 µs to **~2.7 µs** pipelined.
 
 Full methodology, per-request cost breakdown and what is still on the table:
 [`bench/benchmark.md`](bench/benchmark.md).

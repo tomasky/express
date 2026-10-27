@@ -41,8 +41,10 @@ Routes served by every server:
   request** in the first pass (median of 11 paired rounds on a pinned
   core), then to **~12 µs with one request in flight and ~4.7 µs
   pipelined** once the memory leak below was fixed, then **4.7 -> 3.7 µs
-  pipelined** by memoizing the default ETag (same 188-byte response,
-  server CPU per request, pinned core).
+  pipelined** by memoizing the default ETag, then **3.7 -> 2.69 µs** by
+  removing the path-match `to_lower` copies, the `Next` closures and the
+  per-request `Map`s (same 188-byte response, server CPU per request,
+  pinned core).
   A reference cycle in the middleware chain was also found to leak
   ~1.6 KB per request (582 MB after 360k requests); fixing it alone is
   another **2.0x** in CPU per request, with RSS now flat at 7.2 MB.
@@ -197,6 +199,9 @@ before and after (identical), and `moon test` stays at 18/18.
 | `sha256_bytes` sizes its buffers up front | ~6 array reallocations per ETag |
 | `weak_etag` drops a `replace_all` whose result is never used | one 44-character copy per response |
 | `weak_etag` memoizes the last body -> tag pair (bodies <= 8 KB) | a full SHA-256 + base64 per response when the body repeats |
+| `match_path` compares fixed segments with `eq_segment_ci` | two lowercased string copies per segment per request |
+| `Next` stores the dispatch state + step instead of three closures | two closure allocations per `Next`, built per request |
+| `req.params` / `req.body_form` / `req`+`res.locals` are `Map?` until read | three `Map` builds per request on routes that never read them |
 
 ### Measured effect
 
@@ -294,6 +299,28 @@ request still pays the full hash. That is inherent to SHA-256 in pure
 MoonBit; the honest options for that case are setting `ETag` yourself in the
 handler (which skips the automatic one) or turning the `etag` setting off.
 
+### Second round: where the remaining microseconds went
+
+The memo changed the ranking, so the next three changes were each measured
+the same way (pinned cores, 16 in flight, order alternated) and each was
+kept only because the paired rounds showed it:
+
+| Change | Paired result | Kept? |
+| --- | --- | --- |
+| `match_path` no longer calls `to_lower()` twice per fixed segment | 3.19 -> 3.02 µs (-5%) | yes |
+| `Next` holds `{state, step}` instead of three closures | 2.96 -> 2.78 µs (-6%) | yes |
+| `set("ETag", ...)` replaced by a direct `headers.push` | no measurable change | **no**, reverted |
+| `req.params` / `form` / `locals` become `Map?` | 3.04 -> 2.69 µs (-11.5%, 7 of 8 pairs) | yes |
+
+The third row is worth recording: `has_header` has already proved the header
+is absent, so skipping `Res::set`'s MIME check, linear scan and dedupe looks
+obvious, but two independent 4-5 round sessions put the medians within
+noise of each other, so it was reverted rather than kept on faith.
+
+Cumulative, this build versus the one before the pipelining-16 work:
+**4.70 -> 2.69 µs CPU per request** (~1.75x) for the same 188-byte response,
+with the wire format unchanged throughout.
+
 ## Memory: a per-request reference cycle
 
 While profiling the kernel-time share, RSS turned out to grow by about
@@ -379,13 +406,14 @@ pipelining 1 the client hid most of the framework's work):
    bodies; a handler that generates a unique body per request still pays the
    full SHA-256. Inherent to pure-MoonBit SHA-256 -- the options are a faster
    hash (changes the tag value) or handlers supplying their own `ETag`.
-2. **Middleware chain: ~1.1 µs.** `dispatch_layers` still allocates a `steps`
-   array, a `Step` closure and a `Next` record per request; pooling the chain
-   (and reusing the `Next` for a single-layer list) removes those.
-3. **Request decode / `Req`/`Res` construction / finalize: ~1.8 µs.** Four
-   `Map`s and several `String`s are allocated per request even when a handler
-   reads none of them; making `locals`, `params`, `body_form` and `settings`
-   lazy is the next step, followed by pooling the `Req`/`Res` records.
+2. **Middleware chain: ~1.1 µs, ~0.7 µs left.** The `to_lower` copies and
+   the three `Next` closures are gone; `dispatch_layers` still allocates the
+   `steps` array and the `Step` closure itself, and `Req.next` still holds a
+   fresh `Next` record per request -- pooling those is the next step.
+3. **Request decode / `Req`/`Res` construction / finalize: was ~1.8 µs.**
+   The three unused `Map`s are gone; what remains is the `Req`/`Res` records
+   themselves (a dozen `String`s and a `Bytes` each) plus `original_url`
+   concatenation. Pooling records across requests would remove the rest.
 4. **Header writes: ~0.5 µs.** `Res::write_head` copies each header into
    `Bytes` and crosses the FFI once per header; batching the headers into one
    `name\0value\0` blob and crossing once removes 5-6 crossings.
@@ -401,7 +429,7 @@ pipelining 1 the client hid most of the framework's work):
 - Runs are **serial**: one server process and one API under load at a time, so no two benchmarks overlap. Targets are rotated every round so slow drift in host load hits all three equally.
 - express and moonbitlang/async binaries are built with `moon build --release`; the raw baseline is built with `g++ -O3` and the same TLS flags as the express stub.
 - All runs had 0 errors and 0 non-2xx responses.
-- Date: 2026-10-27 06:35 UTC
+- Date: 2026-10-27 10:54 UTC
 
 ## Machine
 

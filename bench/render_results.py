@@ -245,10 +245,16 @@ def main():
         "  pipelined** once the memory leak below was fixed, then **4.7 -> 3.7 µs"
     )
     add(
-        "  pipelined** by memoizing the default ETag (same 188-byte response,"
+        "  pipelined** by memoizing the default ETag, then **3.7 -> 2.69 µs** by"
     )
     add(
-        "  server CPU per request, pinned core)."
+        "  removing the path-match `to_lower` copies, the `Next` closures and the"
+    )
+    add(
+        "  per-request `Map`s (same 188-byte response, server CPU per request,"
+    )
+    add(
+        "  pinned core)."
     )
     add(
         "  A reference cycle in the middleware chain was also found to leak"
@@ -497,6 +503,9 @@ def main():
     add("| `sha256_bytes` sizes its buffers up front | ~6 array reallocations per ETag |")
     add("| `weak_etag` drops a `replace_all` whose result is never used | one 44-character copy per response |")
     add("| `weak_etag` memoizes the last body -> tag pair (bodies <= 8 KB) | a full SHA-256 + base64 per response when the body repeats |")
+    add("| `match_path` compares fixed segments with `eq_segment_ci` | two lowercased string copies per segment per request |")
+    add("| `Next` stores the dispatch state + step instead of three closures | two closure allocations per `Next`, built per request |")
+    add("| `req.params` / `req.body_form` / `req`+`res.locals` are `Map?` until read | three `Map` builds per request on routes that never read them |")
     add("")
     add("### Measured effect")
     add("")
@@ -594,6 +603,28 @@ def main():
     add("MoonBit; the honest options for that case are setting `ETag` yourself in the")
     add("handler (which skips the automatic one) or turning the `etag` setting off.")
     add("")
+    add("### Second round: where the remaining microseconds went")
+    add("")
+    add("The memo changed the ranking, so the next three changes were each measured")
+    add("the same way (pinned cores, 16 in flight, order alternated) and each was")
+    add("kept only because the paired rounds showed it:")
+    add("")
+    add("| Change | Paired result | Kept? |")
+    add("| --- | --- | --- |")
+    add("| `match_path` no longer calls `to_lower()` twice per fixed segment | 3.19 -> 3.02 µs (-5%) | yes |")
+    add("| `Next` holds `{state, step}` instead of three closures | 2.96 -> 2.78 µs (-6%) | yes |")
+    add("| `set(\"ETag\", ...)` replaced by a direct `headers.push` | no measurable change | **no**, reverted |")
+    add("| `req.params` / `form` / `locals` become `Map?` | 3.04 -> 2.69 µs (-11.5%, 7 of 8 pairs) | yes |")
+    add("")
+    add("The third row is worth recording: `has_header` has already proved the header")
+    add("is absent, so skipping `Res::set`'s MIME check, linear scan and dedupe looks")
+    add("obvious, but two independent 4-5 round sessions put the medians within")
+    add("noise of each other, so it was reverted rather than kept on faith.")
+    add("")
+    add("Cumulative, this build versus the one before the pipelining-16 work:")
+    add("**4.70 -> 2.69 µs CPU per request** (~1.75x) for the same 188-byte response,")
+    add("with the wire format unchanged throughout.")
+    add("")
     add("## Memory: a per-request reference cycle")
     add("")
     add("While profiling the kernel-time share, RSS turned out to grow by about")
@@ -680,13 +711,14 @@ def main():
     add("   bodies; a handler that generates a unique body per request still pays the")
     add("   full SHA-256. Inherent to pure-MoonBit SHA-256 -- the options are a faster")
     add("   hash (changes the tag value) or handlers supplying their own `ETag`.")
-    add("2. **Middleware chain: ~1.1 µs.** `dispatch_layers` still allocates a `steps`")
-    add("   array, a `Step` closure and a `Next` record per request; pooling the chain")
-    add("   (and reusing the `Next` for a single-layer list) removes those.")
-    add("3. **Request decode / `Req`/`Res` construction / finalize: ~1.8 µs.** Four")
-    add("   `Map`s and several `String`s are allocated per request even when a handler")
-    add("   reads none of them; making `locals`, `params`, `body_form` and `settings`")
-    add("   lazy is the next step, followed by pooling the `Req`/`Res` records.")
+    add("2. **Middleware chain: ~1.1 µs, ~0.7 µs left.** The `to_lower` copies and")
+    add("   the three `Next` closures are gone; `dispatch_layers` still allocates the")
+    add("   `steps` array and the `Step` closure itself, and `Req.next` still holds a")
+    add("   fresh `Next` record per request -- pooling those is the next step.")
+    add("3. **Request decode / `Req`/`Res` construction / finalize: was ~1.8 µs.**")
+    add("   The three unused `Map`s are gone; what remains is the `Req`/`Res` records")
+    add("   themselves (a dozen `String`s and a `Bytes` each) plus `original_url`")
+    add("   concatenation. Pooling records across requests would remove the rest.")
     add("4. **Header writes: ~0.5 µs.** `Res::write_head` copies each header into")
     add("   `Bytes` and crosses the FFI once per header; batching the headers into one")
     add("   `name\\0value\\0` blob and crossing once removes 5-6 crossings.")

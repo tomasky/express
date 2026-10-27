@@ -141,6 +141,21 @@ work listed above:
   the tag for a given body is still the SHA-256 one -- and RSS stays flat
   (the memo retains at most one body). Measured in 7 paired rounds at 16 in
   flight: **4.70 -> 3.69 us/req (1.27x), faster in 7 of 7 rounds**.
+- **The rest of the chain and the request record.** `match_path` no longer
+  calls `to_lower()` twice per fixed segment (`eq_segment_ci` compares in
+  place, -5%); `Next` carries the dispatch state and the master step instead
+  of three closures (-6%); and `req.params` / `req.body_form` /
+  `req.locals` / `res.locals` are `Map?` until something reads them, which
+  also stops `set_params` from rebuilding a map for routes with no params
+  (-11.5%, 7 of 8 paired rounds).
+
+One candidate was measured and **rejected**: replacing `set("ETag", ...)`
+with a direct `headers.push` after `has_header` had already proved the header
+absent looked like free money, but two independent sessions put the medians
+within noise, so it was reverted instead of kept on faith.
+
+Cumulative: **4.70 -> 2.69 us CPU per request (~1.75x)** at 16 in flight for
+the same 188-byte response, wire format unchanged throughout.
 
 The wire output is byte-for-byte identical (status lines, headers, `ETag`
 values and bodies for `/text`, `/json`, a query string, a 404, `HEAD` and a
