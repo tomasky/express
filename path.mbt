@@ -340,7 +340,7 @@ pub fn PathPattern::match_path(
   while pi < self.segments.length() {
     match self.segments[pi] {
       Fixed(expected) => {
-        if si >= parts.length() || parts[si].to_lower() != expected.to_lower() {
+        if si >= parts.length() || !eq_segment_ci(parts[si], expected) {
           return None
         }
         si = si + 1
@@ -365,6 +365,34 @@ pub fn PathPattern::match_path(
     return None
   }
   Some(params)
+}
+
+///|
+/// ASCII case-insensitive segment equality without allocating the lowercased
+/// copies that `to_lower` would make on every path match.
+fn eq_segment_ci(a : String, b : String) -> Bool {
+  let len = a.length()
+  if len != b.length() {
+    return false
+  }
+  let mut index = 0
+  while index < len {
+    let mut left = a.unsafe_get(index).to_int()
+    let mut right = b.unsafe_get(index).to_int()
+    if left != right {
+      if left >= 65 && left <= 90 {
+        left = left + 32
+      }
+      if right >= 65 && right <= 90 {
+        right = right + 32
+      }
+      if left != right {
+        return false
+      }
+    }
+    index = index + 1
+  }
+  true
 }
 
 ///|

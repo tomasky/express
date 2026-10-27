@@ -2205,31 +2205,38 @@ pub type Handler = (Req, Res, Next) -> Unit
 /// Continues the middleware chain. Call `proceed()` to keep going or
 /// `fail(message)` to hand control to the error middleware.
 pub struct Next {
-  priv run : (String?) -> Unit
-  priv run_status : (Int32, String) -> Unit
-  priv proceed_fn : () -> Unit
+  // The dispatch cursor and the master continuation, stored directly instead
+  // of three closures per `Next` (one for each way the next link is used).
+  // The methods below mutate `state` inline and call `step`, which is exactly
+  // what the three closures did, with two fewer allocations per request.
+  priv state : DispatchState
+  priv step : () -> Unit
 }
 
 ///|
 pub fn Next::proceed(self : Next) -> Unit {
-  (self.proceed_fn)()
+  (self.step)()
 }
 
 ///|
 pub fn Next::fail(self : Next, message : String) -> Unit {
-  (self.run)(Some(message))
+  self.state.error = Some(message)
+  (self.step)()
 }
 
 ///|
 /// Fails with an HTTP status, the equivalent of Express'
 /// `next(createError(status, message))`.
 pub fn Next::fail_status(self : Next, status : Int32, message : String) -> Unit {
-  (self.run_status)(status, message)
+  self.state.error = Some(message)
+  self.state.error_status = Some(status)
+  (self.step)()
 }
 
 ///|
 pub fn Next::resume_with(self : Next, error : String?) -> Unit {
-  (self.run)(error)
+  self.state.error = error
+  (self.step)()
 }
 
 ///|
@@ -2238,11 +2245,9 @@ fn Next::resume_with_status(
   error : String?,
   status : Int32?,
 ) -> Unit {
-  match (error, status) {
-    (Some(message), Some(status)) => (self.run_status)(status, message)
-    (Some(message), None) => (self.run)(Some(message))
-    _ => (self.run)(None)
-  }
+  self.state.error = error
+  self.state.error_status = status
+  (self.step)()
 }
 
 ///|
@@ -3259,18 +3264,7 @@ fn mount_router(
 
 ///|
 fn make_next(state : DispatchState, step : () -> Unit) -> Next {
-  {
-    run: fn(error) {
-      state.error = error
-      step()
-    },
-    run_status: fn(status, message) {
-      state.error = Some(message)
-      state.error_status = Some(status)
-      step()
-    },
-    proceed_fn: step,
-  }
+  { state, step }
 }
 
 ///|
@@ -3301,18 +3295,7 @@ fn run_param_callbacks(
       let (name, callback) = param_callbacks[i]
       cursor[0] = i + 1
       if req.has_param(name) {
-        let next : Next = {
-          run: fn(error) {
-            state.error = error
-            dispatch_step()
-          },
-          run_status: fn(status, message) {
-            state.error = Some(message)
-            state.error_status = Some(status)
-            dispatch_step()
-          },
-          proceed_fn: steps[0],
-        }
+        let next : Next = { state, step: dispatch_step }
         callback(req, next)
         return
       }
