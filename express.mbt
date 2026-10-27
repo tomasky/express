@@ -3107,9 +3107,38 @@ pub fn dispatch_abort(request_id : UInt64) -> Unit {
 let g_shim_ready : Array[Bool] = [false]
 
 ///|
+/// One array shared by every request that starts with no router params. It is
+/// only ever read (`set_params` copies out of it), so sharing is safe and saves
+/// an allocation per request.
+let g_no_params : Array[(String, String)] = []
+
+///|
+/// Whether every character is an ASCII uppercase letter, without allocating.
+fn is_upper_ascii(text : String) -> Bool {
+  let len = text.length()
+  let mut index = 0
+  while index < len {
+    let code = text.unsafe_get(index).to_int()
+    if code < 65 || code > 90 {
+      return false
+    }
+    index = index + 1
+  }
+  true
+}
+
+///|
 fn start_request(app : App, uws_res : UwsRes) -> Unit {
   let request_id = request_slot_reserve()
-  let http_method = utf8_string(uwb_req_method()).to_upper()
+  // Methods arrive uppercase already; `to_upper` would copy the `String` again
+  // for no change. A non-uppercase method is rare (and outside the HTTP spec),
+  // so it is the only case that pays, and it is detected without allocating.
+  let raw_method = utf8_string(uwb_req_method())
+  let http_method = if is_upper_ascii(raw_method) {
+    raw_method
+  } else {
+    raw_method.to_upper()
+  }
   let url_path = utf8_string(uwb_req_url())
   let query_raw = utf8_string(uwb_req_query())
   // One FFI call and one allocation for all headers, instead of two of each
@@ -3132,7 +3161,7 @@ fn start_request(app : App, uws_res : UwsRes) -> Unit {
     base_url: "",
     original_url,
     params: None,
-    base_params: [],
+    base_params: g_no_params,
     route_info: None,
     next: None,
     query_params: None,
@@ -3325,7 +3354,7 @@ fn mount_router(
       None => []
     }
   } else {
-    []
+    g_no_params
   }
   dispatch_layers(router.layers, router.param_callbacks, req, res, fn(state) {
     req.url_path = saved_path
