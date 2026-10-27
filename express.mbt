@@ -1240,14 +1240,60 @@ fn Res::request_fresh(self : Res) -> Bool {
 }
 
 ///|
+/// Byte-for-byte equality, used by the ETag memo below.
+fn bytes_equal(a : Bytes, b : Bytes) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  let mut i = 0
+  while i < a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+///|
+/// Largest body the ETag memo retains, so one big response cannot pin memory.
+let g_etag_memo_limit : Int32 = 8192
+
+///|
+/// The last body hashed and the tag computed for it. Responses repeat far more
+/// often than they differ (a page, a JSON payload, a static asset) and the ETag
+/// is a pure function of the body, so an identical body can reuse the tag
+/// without rehashing. The hash costs ~1.5 us per response on this box; this
+/// removes it for repeated bodies and leaves every output byte identical.
+///
+/// One array element holds the pair so a single read sees both halves; the
+/// value returned is always the one validated against the caller's body.
+let g_etag_memo : Array[(Bytes, String)] = [(Bytes::make(0, b'\x00'), "")]
+
+///|
 /// A weak ETag for in-memory bodies: `W/"<length>-<hash>"`, the shape used by
 /// the `etag` package that Express relies on.
 fn weak_etag(data : Bytes) -> String {
+  let small = data.length() <= g_etag_memo_limit
+  if small {
+    let entry = g_etag_memo[0]
+    if entry.1 != "" && bytes_equal(entry.0, data) {
+      return entry.1
+    }
+  }
   // `base64` of a 32-byte digest is 44 characters ending in `=`, and only the
   // first 27 are kept, so the `=` never reaches the output -- dropping the
   // `replace_all` pass removes a 44-character copy per response.
   let digest = base64_encode(sha256_bytes(data))
-  "W/\"" + data.length().to_string() + "-" + digest[:27].to_owned() + "\""
+  let tag = "W/\"" +
+    data.length().to_string() +
+    "-" +
+    digest[:27].to_owned() +
+    "\""
+  if small {
+    g_etag_memo[0] = (data, tag)
+  }
+  tag
 }
 
 ///|

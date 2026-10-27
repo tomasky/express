@@ -392,6 +392,48 @@ and their socket-write paths differ.
 - `Router` does not host WebSocket routes (`app.ws` is application-level only).
 - `RouteInfo.method` is exposed as `http_method()` (MoonBit reserves `method`).
 
+## Benchmark
+
+`bench/` holds a self-contained, reproducible benchmark of this framework
+against MoonBit's own HTTP server (`moonbitlang/async`) and a bare C++
+µWebSockets handler. It is serial (one server under load at a time) and rotates
+the target order so host drift hits all three equally.
+
+```bash
+moon build example/bench --release            # express target
+cd bench/http_server_async && moon build --release && cd ../..
+bash bench/run_bench.sh 50 5                  # autocannon latency numbers
+ROUNDS=3 bash bench/run_bench.sh 50 5         # with the C load generator
+python3 bench/render_results.py               # regenerate bench/benchmark.md
+```
+
+`autocannon` at pipelining 1 is capped by the loop-back round trip, not by the
+servers, so `run_bench.sh` also drives `bench/loadgen.c`, a ~150-line C client
+(epoll, N requests in flight) pinned to the second core, and writes
+`bench/results/loadgen.csv`. Headline results (server CPU per request on a
+pinned core, 64 connections):
+
+| Server | 1 in flight | 16 in flight |
+| --- | ---: | ---: |
+| **express** | ~12 µs | **~3.7 µs** |
+| moonbitlang/async | ~16 µs | ~13 µs |
+| raw C++ µWebSockets | ~3 µs | ~0.9 µs |
+
+Throughput follows the same ordering (express ~54k req/s at one in flight and
+~155k at 16, vs async ~43k/~56k and raw ~74k/~825k). The gap to native C++ is
+a factor of a few, never an order of magnitude, and express is faster than
+MoonBit's own HTTP server in every column.
+
+Three measured optimization passes live in the code and are all wire-format
+identical: one `Bytes` blob for request headers, a slot table for requests,
+lazy `remote_ip`, and — the biggest single win — an ETag memo that skips the
+per-response SHA-256 when the body repeats. Together with a fixed per-request
+memory leak (RSS was growing 1.6 KB/request; now flat at 7.2 MB), per-request
+CPU dropped from ~40 µs to ~3.7 µs pipelined.
+
+Full methodology, per-request cost breakdown and what is still on the table:
+[`bench/benchmark.md`](bench/benchmark.md).
+
 ## Tests
 
 `moon test` covers route matching (static, params, wildcard, prefixes, trailing

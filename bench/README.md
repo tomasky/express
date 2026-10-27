@@ -86,7 +86,7 @@ taskset -c 0 ./bench.exe &
 taskset -c 1 ./bench/loadgen 30000 64 5 16 /text   # port conns secs inflight path
 ```
 
-## Findings## Findings
+## Findings
 
 - The µWebSockets engine is not the problem, and neither is the response size:
   with the same two syscalls per request (`strace -c`: `recvfrom` + `sendto`)
@@ -104,12 +104,15 @@ taskset -c 1 ./bench/loadgen 30000 64 5 16 /text   # port conns secs inflight pa
   response bytes) changed nothing measurable (29.6 vs 30.4 us, 4 paired
   rounds), and a body-length sweep from 106 B to 213 B in one binary was flat.
   So header/response size is *not* where the remaining CPU goes.
-- Ablated per-request costs *in the original build*: header copy across the FFI
-  ~5 us, lazy-able query/cookie parsing ~3 us, one `getpeername` per request
-  for `remote_ip` 3.5-4.5 us (`strace` showed 21,067 calls for 21,068
-  requests), a SHA-256 ETag ~1.4 us, plus smaller allocations
-  (`Req`/`Res`/`RequestState`, the global `g_requests` map, the dispatch
-  chain).
+- Ablated per-request costs, measured **at 16 requests in flight** (pipelining 1
+  hides them behind the client): a SHA-256 ETag on every response ~1.5-1.8 us
+  (the single most expensive piece of framework work), the middleware chain
+  (`steps` array + `Step` closure + `Next` record) ~1.1 us, request decode +
+  `Req`/`Res` construction + finalize ~1.8 us, and header writes ~0.5 us,
+  against a floor of ~0.9 us for a plain C++ handler on the same engine. The
+  earlier pipelining-1 ablations (header copy ~5 us, query/cookie parsing
+  ~3 us, `getpeername` ~3.5-4.5 us, `ETag` ~1.4 us) overstated the big pieces
+  relative to each other and missed that the ETag is the top cost.
 - `moon` compiles `native-stub` C/C++ with **no `-O` flag**, so the header-only
   uWebSockets engine used to build at `-O0` even in `--release` (1.7 MB
   executable). `moon.pkg` now passes `-O3`: half the binary, ~5% more
@@ -131,6 +134,13 @@ work listed above:
   of rebuilding a scratch array; `run_param_callbacks` returns early when no
   `param` callbacks are registered; `sha256_bytes` sizes its buffers up front;
   `weak_etag` dropped an unused `replace_all`.
+- **`weak_etag` memoizes the last body -> tag pair** (bodies <= 8 KB). The
+  pipelining-16 ablations showed the SHA-256 is ~1.5 us of every response, so
+  a body that repeats (a page, a JSON payload, a static asset) reuses its tag
+  after a byte-for-byte compare instead of rehashing. Output is unchanged --
+  the tag for a given body is still the SHA-256 one -- and RSS stays flat
+  (the memo retains at most one body). Measured in 7 paired rounds at 16 in
+  flight: **4.70 -> 3.69 us/req (1.27x), faster in 7 of 7 rounds**.
 
 The wire output is byte-for-byte identical (status lines, headers, `ETag`
 values and bodies for `/text`, `/json`, a query string, a 404, `HEAD` and a

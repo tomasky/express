@@ -37,11 +37,12 @@ Routes served by every server:
   request of server CPU it is larger, because batching removes the
   engine's syscall cost but not the framework's. Express beats
   MoonBit's own HTTP server in both cases.
-- Framework work has been cut twice: **40.0 -> 27.0 µs CPU per request**
-  in the first pass (median of 11 paired rounds on a pinned core), then to
-  **~12 µs with one request in flight and ~4.7 µs pipelined** once the
-  memory leak below was fixed (same 188-byte response, server CPU per
-  request, pinned core).
+- Framework work has been cut three times: **40.0 -> 27.0 µs CPU per
+  request** in the first pass (median of 11 paired rounds on a pinned
+  core), then to **~12 µs with one request in flight and ~4.7 µs
+  pipelined** once the memory leak below was fixed, then **4.7 -> 3.7 µs
+  pipelined** by memoizing the default ETag (same 188-byte response,
+  server CPU per request, pinned core).
   A reference cycle in the middleware chain was also found to leak
   ~1.6 KB per request (582 MB after 360k requests); fixing it alone is
   another **2.0x** in CPU per request, with RSS now flat at 7.2 MB.
@@ -195,6 +196,7 @@ before and after (identical), and `moon test` stays at 18/18.
 | `Res::set` overwrites in place; `remove_header` compacts in place | a scratch array built by every `res.set`/`remove_header` |
 | `sha256_bytes` sizes its buffers up front | ~6 array reallocations per ETag |
 | `weak_etag` drops a `replace_all` whose result is never used | one 44-character copy per response |
+| `weak_etag` memoizes the last body -> tag pair (bodies <= 8 KB) | a full SHA-256 + base64 per response when the body repeats |
 
 ### Measured effect
 
@@ -220,6 +222,77 @@ swings ±50% between sessions on this shared box:
   calls for 21,068 requests before, 0 after), now equal to the bare handler.
 - Under an identical 5 s `strace -c` load the server served 21k requests
   before these changes and 32.5k after (+55%).
+
+### Where the cost goes at pipelining 16
+
+At pipelining 1 the client is the bottleneck and hides most of the framework
+work, so the ablations were repeated at **16 requests in flight** on 64
+connections (server pinned to core 0, C load generator on core 1). Each row
+is a build with exactly one part removed, measured back to back in rotated
+order; server CPU per request comes from `/proc/<pid>/stat`.
+
+| Build | rps | CPU/req | What it removes |
+| --- | ---: | ---: | --- |
+| full framework | ~160k | **4.70 µs** | -- |
+| no header writes (status line only) | ~188k | 4.23 µs | `write_head`'s per-header FFI calls |
+| no middleware chain (respond in `start_request`) | ~208k | 3.62 µs | `dispatch_layers`, `Next`, closures |
+| no ETag hash (freshness check kept) | ~255k | **2.92 µs** | `weak_etag` + `set("ETag", ...)` |
+| ETag kept, freshness check removed | ~162k | 4.44 µs | `req.fresh()` only |
+| empty request-header blob | ~186k | ~4.2 µs | the `name\0value\0` blob copy |
+| no MoonBit at all (plain C++ handler) | ~760k | **0.91 µs** | Req/Res, dispatch, finalize, FFI |
+
+Reading the deltas against the full framework:
+
+- **Engine and syscalls: ~0.9 µs** -- what a plain C++ handler costs; the floor.
+- **Request decode, `Req`/`Res` construction, finalize, FFI: ~1.8 µs** --
+  mostly allocations (four `Map`s and several `String`s per request) and the
+  response-building path.
+- **Middleware chain: ~1.1 µs** -- routing plus the `steps` array, `Step`
+  closure and `Next` record. This looked like ~2% at pipelining 1 purely
+  because the client was the bottleneck there; at 16 in flight it is ~25% of
+  the framework's cost.
+- **Header writes: ~0.5 µs** -- one `utf8_bytes` copy and one FFI crossing
+  per header.
+- **ETag: ~1.5-1.8 µs** -- one SHA-256 over the body plus base64 and a header
+  set, on by default. **The single most expensive piece of framework work
+  per response.** The freshness check next to it (`req.fresh()`) costs
+  nothing measurable.
+
+That last number is why the ETag memo below exists: the tag is a pure
+function of the body, and real traffic repeats bodies far more than it
+changes them.
+
+### Measured effect of the ETag memo
+
+The pipelining-16 ablations put ~1.5 µs of every response into the default
+ETag. The memo keeps the last body it hashed and its tag, compares an
+incoming body byte for byte (13 bytes for `/text`, so a few nanoseconds) and
+reuses the tag when they match; when they differ it hashes and stores the
+new pair. Bodies larger than 8 KB are never retained. Output is unchanged:
+the memo only skips recomputing a value that is already correct for that
+body.
+
+Seven paired rounds, order alternated, server pinned to core 0, C load
+generator on core 1, 64 connections, 16 in flight:
+
+| Round | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| before (µs/req) | 4.65 | 4.69 | 4.68 | 6.68 | 5.49 | 5.56 | 4.70 |
+| after (µs/req) | 4.28 | 3.69 | 3.70 | 3.51 | 3.63 | 3.80 | 3.40 |
+
+- Median **4.70 -> 3.69 µs CPU per request**, a **1.27x** reduction; the
+  after build is faster in **7 of 7** paired rounds.
+- rps moves from ~161k to ~195k in the same runs (the host is noisy, so the
+  CPU figure is the reliable one).
+- RSS stays flat: 7232 kB after warmup, 7248 kB after 140k requests across
+  `/text`, `/json` and a 404. The memo retains at most one body plus its tag.
+- Wire output byte-for-byte identical (the tag for a given body is still the
+  SHA-256 one); `moon test` 18/18.
+
+What the memo does not help: a handler whose response body changes on every
+request still pays the full hash. That is inherent to SHA-256 in pure
+MoonBit; the honest options for that case are setting `ETag` yourself in the
+handler (which skips the automatic one) or turning the `etag` setting off.
 
 ## Memory: a per-request reference cycle
 
@@ -261,7 +334,9 @@ whose response has already been sent.
 Verified:
 
 - RSS: **7228 kB -> 7256 kB over 180,000 requests** across `/text`, `/json`
-  and a 404 (previously 582 MB at 360k). A 320k-request run stays flat too.
+  and a 404 (previously 582 MB at 360k). A 320k-request run stays flat too,
+  and a later re-check with the ETag memo in place measured **7232 kB ->
+  7248 kB over 140,000 requests**.
 - Wire output still byte-identical (status line, headers, `ETag`, bodies for
   `/text`, `/json`, query string, 404, `HEAD`, 304); `moon test` 18/18.
 
@@ -287,7 +362,8 @@ order alternated). The split is not the same, though:
 - **Framework userspace: ~5.5 µs/request more than raw.** ~8.3 µs for express
   vs ~2.8 µs for the C++ handler. That is the price of routing, middleware,
   the request accessors and the response builder. It is reproducible in every
-  round, and the optimization passes below already cut it by 1.58x.
+  round; the optimization passes below already cut it by 1.58x, and the ETag
+  memo shaves a further ~1 µs on repeating bodies.
 - **Kernel time: ~5 µs/request less than raw.** Express measured ~11.7 µs
   against ~16.8 µs for the C++ handler in the same runs. Both do exactly 2
   syscalls per request (`recvfrom` + `sendto`) and one 188-byte `sendto` per
@@ -295,18 +371,24 @@ order alternated). The split is not the same, though:
   shared VM the same binaries have measured 6-50 µs across sessions. The two
   effects cancel, which is why the totals match while userspace does not.
 
-What is left to try, in order of expected value:
+What is left to try, ordered by what the pipelining-16 ablations say it is
+worth (they were the only measurements that separated the parts, because at
+pipelining 1 the client hid most of the framework's work):
 
-1. `Res::write_head` copies each header into `Bytes` and crosses the FFI once
-   per header; batching into a single buffer would remove 5-6 crossings.
-2. `dispatch_layers` still allocates a `steps` array, a closure and a `Next`
-   record per request; a pooled chain would remove those allocations.
-3. `Req`/`Res` still allocate two `Map`s and several `String`s up front even
-   for handlers that read none of them; deferring `locals`/`params` would
-   trim userspace further.
-4. A lean mode that skips the ETag/`Date`/locals work for hot dynamic routes.
-   (ETag itself measured ~0: turning it off changed nothing measurable, so
-   this is only worth it if a handler also skips `Date` and locals.)
+1. **ETag for non-repeating bodies: ~1.5 µs.** The memo handles repeated
+   bodies; a handler that generates a unique body per request still pays the
+   full SHA-256. Inherent to pure-MoonBit SHA-256 -- the options are a faster
+   hash (changes the tag value) or handlers supplying their own `ETag`.
+2. **Middleware chain: ~1.1 µs.** `dispatch_layers` still allocates a `steps`
+   array, a `Step` closure and a `Next` record per request; pooling the chain
+   (and reusing the `Next` for a single-layer list) removes those.
+3. **Request decode / `Req`/`Res` construction / finalize: ~1.8 µs.** Four
+   `Map`s and several `String`s are allocated per request even when a handler
+   reads none of them; making `locals`, `params`, `body_form` and `settings`
+   lazy is the next step, followed by pooling the `Req`/`Res` records.
+4. **Header writes: ~0.5 µs.** `Res::write_head` copies each header into
+   `Bytes` and crosses the FFI once per header; batching the headers into one
+   `name\0value\0` blob and crossing once removes 5-6 crossings.
 5. Benchmark with the load generator on a *separate* host. On this shared
    2-vCPU box the same binary varies 2-4x between sessions, which is larger
    than the effects being chased.
@@ -319,7 +401,7 @@ What is left to try, in order of expected value:
 - Runs are **serial**: one server process and one API under load at a time, so no two benchmarks overlap. Targets are rotated every round so slow drift in host load hits all three equally.
 - express and moonbitlang/async binaries are built with `moon build --release`; the raw baseline is built with `g++ -O3` and the same TLS flags as the express stub.
 - All runs had 0 errors and 0 non-2xx responses.
-- Date: 2026-10-25 07:22 UTC
+- Date: 2026-10-27 06:35 UTC
 
 ## Machine
 
