@@ -419,6 +419,10 @@ pinned core, 64 connections):
 | moonbitlang/async | ~16 µs | ~13 µs |
 | raw C++ µWebSockets | ~3 µs | ~0.9 µs |
 
+The express figures are the current build, measured as paired A/B rounds
+against the previous build; the recorded throughput table in
+`bench/benchmark.md` is a snapshot of an earlier run.
+
 Throughput follows the same ordering (express ~54k req/s at one in flight and
 ~155k at 16, vs async ~43k/~56k and raw ~74k/~825k). The gap to native C++ is
 a factor of a few, never an order of magnitude, and express is faster than

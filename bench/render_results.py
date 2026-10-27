@@ -346,12 +346,14 @@ def main():
         e1, e16 = tp[("express", 1)], tp[("express", 16)]
         a1, a16 = tp[("async", 1)], tp[("async", 16)]
         r1, r16 = tp[("raw", 1)], tp[("raw", 16)]
-        add("This table is a snapshot of that run. The later optimization rounds are")
-    add("measured as paired A/B rounds against the previous build (section *Third")
-    add("round* below) and are therefore **not** reflected in these rows: express")
-    add("is at ~2.5 µs per request at 16 in flight today, not 4.66.")
-    add("")
-    add("Read the two columns separately, because they answer different questions:")
+        add(
+            "This table is a snapshot of that run. The later optimization rounds are"
+        )
+        add("measured as paired A/B rounds against the previous build (section *Third")
+        add("round* below) and are therefore **not** reflected in these rows: express")
+        add("is at ~2.5 µs per request at 16 in flight today, not 4.66.")
+        add("")
+        add("Read the two columns separately, because they answer different questions:")
         add("")
         add(
             f"- **One request at a time** (a browser, or a proxy without pipelining):"

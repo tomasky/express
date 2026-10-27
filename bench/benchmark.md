@@ -90,6 +90,11 @@ the rounds of this run:
 | moonbitlang/async | 42,960 req/s | 16.2 us | 55,664 req/s | 13.38 us |
 | raw uWebSockets | 74,295 req/s | 2.8 us | 825,144 req/s | 0.25 us |
 
+This table is a snapshot of that run. The later optimization rounds are
+measured as paired A/B rounds against the previous build (section *Third
+round* below) and are therefore **not** reflected in these rows: express
+is at ~2.5 µs per request at 16 in flight today, not 4.66.
+
 Read the two columns separately, because they answer different questions:
 
 - **One request at a time** (a browser, or a proxy without pipelining):
