@@ -311,11 +311,22 @@ kept only because the paired rounds showed it:
 | `Next` holds `{state, step}` instead of three closures | 2.96 -> 2.78 µs (-6%) | yes |
 | `set("ETag", ...)` replaced by a direct `headers.push` | no measurable change | **no**, reverted |
 | `req.params` / `form` / `locals` become `Map?` | 3.04 -> 2.69 µs (-11.5%, 7 of 8 pairs) | yes |
+| all response headers packed into one blob, one FFI call | 2.80 -> 2.87 µs, i.e. slightly worse | **no**, reverted |
 
-The third row is worth recording: `has_header` has already proved the header
-is absent, so skipping `Res::set`'s MIME check, linear scan and dedupe looks
-obvious, but two independent 4-5 round sessions put the medians within
-noise of each other, so it was reverted rather than kept on faith.
+Two of those rows were reverted, and both are worth recording:
+
+- `has_header` has already proved the header absent, so skipping
+  `Res::set`'s MIME check, linear scan and dedupe looks obvious -- but two
+  independent 4-5 round sessions put the medians within noise of each
+  other.
+- Batching the headers is the interesting one. µWebSockets has no batch
+  API, so the win would be one FFI crossing instead of five or six. It was
+  implemented (a `name\0value\0` blob, mirroring the request-header fast
+  path) and measured **slower**: 2.87 vs 2.80 µs over 8 paired rounds.
+  Building the blob costs a size pass plus a byte-at-a-time copy loop in
+  MoonBit, and that is more expensive than the four FFI crossings it
+  removes. So `write_head`'s ~0.5 µs is the `utf8_bytes` encode of each
+  name/value, not the crossings.
 
 Cumulative, this build versus the one before the pipelining-16 work:
 **4.70 -> 2.69 µs CPU per request** (~1.75x) for the same 188-byte response,
@@ -414,12 +425,20 @@ pipelining 1 the client hid most of the framework's work):
    The three unused `Map`s are gone; what remains is the `Req`/`Res` records
    themselves (a dozen `String`s and a `Bytes` each) plus `original_url`
    concatenation. Pooling records across requests would remove the rest.
-4. **Header writes: ~0.5 µs.** `Res::write_head` copies each header into
-   `Bytes` and crosses the FFI once per header; batching the headers into one
-   `name\0value\0` blob and crossing once removes 5-6 crossings.
+4. **Header writes: ~0.5 µs, and the obvious fix does not work.** Batching
+   the headers into one blob was implemented and measured *slower* (see
+   above): the cost is `utf8_bytes` per name and value, not the FFI
+   crossings. Removing it means storing headers pre-encoded in `Res`, which
+   trades one encode per write for zero encodes per response.
 5. Benchmark with the load generator on a *separate* host. On this shared
    2-vCPU box the same binary varies 2-4x between sessions, which is larger
    than the effects being chased.
+
+Beyond that the measurements hit the resolution of the box: a change worth
+less than ~3% cannot be told apart from host noise on these two shared
+vCPUs. The next cut large enough to measure cleanly is pooling the
+`Req`/`Res` records across requests (a dozen `String`s and a `Bytes` each),
+which is a bigger refactor than anything left above.
 
 ## Method
 
@@ -429,7 +448,7 @@ pipelining 1 the client hid most of the framework's work):
 - Runs are **serial**: one server process and one API under load at a time, so no two benchmarks overlap. Targets are rotated every round so slow drift in host load hits all three equally.
 - express and moonbitlang/async binaries are built with `moon build --release`; the raw baseline is built with `g++ -O3` and the same TLS flags as the express stub.
 - All runs had 0 errors and 0 non-2xx responses.
-- Date: 2026-10-27 10:55 UTC
+- Date: 2026-10-27 11:02 UTC
 
 ## Machine
 

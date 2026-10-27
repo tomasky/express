@@ -149,10 +149,17 @@ work listed above:
   also stops `set_params` from rebuilding a map for routes with no params
   (-11.5%, 7 of 8 paired rounds).
 
-One candidate was measured and **rejected**: replacing `set("ETag", ...)`
-with a direct `headers.push` after `has_header` had already proved the header
-absent looked like free money, but two independent sessions put the medians
-within noise, so it was reverted instead of kept on faith.
+Two candidates were measured and **rejected**, both worth knowing:
+
+- Replacing `set("ETag", ...)` with a direct `headers.push` after `has_header`
+  had already proved the header absent looked like free money, but two
+  independent sessions put the medians within noise, so it was reverted.
+- Packing all response headers into one `name\0value\0` blob to cross the FFI
+  once instead of five or six times was implemented and measured **slower**
+  (2.87 vs 2.80 us over 8 paired rounds): building the blob needs a size pass
+  and a byte-at-a-time copy loop in MoonBit, which costs more than the
+  crossings it removes. So `write_head`'s ~0.5 us is the `utf8_bytes` encode
+  per name/value, not the crossings.
 
 Cumulative: **4.70 -> 2.69 us CPU per request (~1.75x)** at 16 in flight for
 the same 188-byte response, wire format unchanged throughout.
