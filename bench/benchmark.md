@@ -37,7 +37,7 @@ Routes served by every server:
   request of server CPU it is larger, because batching removes the
   engine's syscall cost but not the framework's. Express beats
   MoonBit's own HTTP server in both cases.
-- Framework work has been cut three times: **40.0 -> 27.0 µs CPU per
+- Framework work has come down in steps: **40.0 -> 27.0 µs CPU per
   request** in the first pass (median of 11 paired rounds on a pinned
   core), then to **~12 µs with one request in flight and ~4.7 µs
   pipelined** once the memory leak below was fixed, then **4.7 -> 3.7 µs
@@ -429,7 +429,7 @@ pipelining 1 the client hid most of the framework's work):
 - Runs are **serial**: one server process and one API under load at a time, so no two benchmarks overlap. Targets are rotated every round so slow drift in host load hits all three equally.
 - express and moonbitlang/async binaries are built with `moon build --release`; the raw baseline is built with `g++ -O3` and the same TLS flags as the express stub.
 - All runs had 0 errors and 0 non-2xx responses.
-- Date: 2026-10-27 10:54 UTC
+- Date: 2026-10-27 10:55 UTC
 
 ## Machine
 

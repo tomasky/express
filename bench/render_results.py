@@ -233,7 +233,7 @@ def main():
             )
             add("  MoonBit's own HTTP server in both cases.")
     add(
-        "- Framework work has been cut three times: **40.0 -> 27.0 µs CPU per"
+        "- Framework work has come down in steps: **40.0 -> 27.0 µs CPU per"
     )
     add(
         "  request** in the first pass (median of 11 paired rounds on a pinned"
