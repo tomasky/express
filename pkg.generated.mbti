@@ -156,7 +156,9 @@ pub struct PathPattern {
   // private fields
 }
 pub fn PathPattern::is_any(Self) -> Bool
+pub fn PathPattern::match_parts(Self, Array[String], Bool) -> Array[(String, String)]?
 pub fn PathPattern::match_path(Self, String, Bool) -> Array[(String, String)]?
+pub fn PathPattern::match_static_path(Self, String, Bool) -> Bool?
 pub fn PathPattern::source(Self) -> String
 
 pub enum RangeResult {

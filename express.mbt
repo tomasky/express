@@ -211,6 +211,10 @@ pub struct Req {
   // Resolved on first use: `getpeername` is a syscall, and a handler that
   // never asks for the address (the common case) should not pay for it.
   priv mut remote_ip_cache : String?
+  // The dispatcher splits the path once per request and hands the same array
+  // to every layer it tries; `mount_relative` rewrites `url_path`, so that is
+  // the only place the cache has to be dropped.
+  priv mut path_segments_cache : Array[String]?
   priv mut aborted : Bool
   priv mut locals : Map[String, String]?
   priv protocol : String
@@ -225,6 +229,35 @@ pub struct Req {
 #alias(method)
 pub fn Req::http_method(self : Req) -> String {
   self.http_method
+}
+
+///|
+/// Matches a layer against this request: static patterns are compared straight
+/// against the raw path, dynamic ones fall back to the split path, which is
+/// itself split only once per request.
+fn Req::match_pattern(
+  self : Req,
+  pattern : PathPattern,
+  prefix : Bool,
+) -> Array[(String, String)]? {
+  match pattern.match_static_path(self.url_path, prefix) {
+    Some(true) => Some([])
+    Some(false) => None
+    None => pattern.match_parts(self.path_segments(), prefix)
+  }
+}
+
+///|
+/// Splits the request path once and reuses the result across route layers.
+fn Req::path_segments(self : Req) -> Array[String] {
+  match self.path_segments_cache {
+    Some(parts) => parts
+    None => {
+      let parts = split_path(self.url_path)
+      self.path_segments_cache = Some(parts)
+      parts
+    }
+  }
 }
 
 ///|
@@ -3111,6 +3144,7 @@ fn start_request(app : App, uws_res : UwsRes) -> Unit {
     body_form_json: None,
     cookies: None,
     remote_ip_cache: None,
+    path_segments_cache: None,
     aborted: false,
     locals: None,
     protocol: if app.is_ssl {
@@ -3188,7 +3222,7 @@ fn dispatch_layers(
       match layer {
         Mw(pattern, middleware) =>
           if state.error is None {
-            match pattern.match_path(req.path(), true) {
+            match req.match_pattern(pattern, true) {
               Some(params) => {
                 req.set_params(params)
                 running = false
@@ -3203,7 +3237,7 @@ fn dispatch_layers(
           }
         Mount(pattern, router, prefix) =>
           if state.error is None {
-            match pattern.match_path(req.path(), true) {
+            match req.match_pattern(pattern, true) {
               Some(params) => {
                 req.set_params(params)
                 running = false
@@ -3219,7 +3253,7 @@ fn dispatch_layers(
         Err(pattern, middleware) =>
           match state.error {
             Some(message) =>
-              match pattern.match_path(req.path(), true) {
+              match req.match_pattern(pattern, true) {
                 Some(params) => {
                   req.set_params(params)
                   state.error = None
@@ -3238,7 +3272,7 @@ fn dispatch_layers(
         Route(route_method, pattern, handler) =>
           if state.error is None &&
             method_matches(route_method, req.http_method()) {
-            match pattern.match_path(req.path(), false) {
+            match req.match_pattern(pattern, false) {
               Some(params) => {
                 req.set_params(params)
                 req.set_route(
@@ -3282,6 +3316,7 @@ fn mount_router(
   let saved_base_params = req.base_params
   let saved_route = req.route_info
   let saved_next = req.next
+  req.path_segments_cache = None
   req.url_path = mount_relative(prefix, req.path())
   req.base_url = req.base_url + prefix
   req.base_params = if router.merge_params {
@@ -3294,6 +3329,7 @@ fn mount_router(
   }
   dispatch_layers(router.layers, router.param_callbacks, req, res, fn(state) {
     req.url_path = saved_path
+    req.path_segments_cache = None
     req.base_url = saved_base
     req.params = saved_params
     req.base_params = saved_base_params

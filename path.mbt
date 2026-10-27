@@ -333,7 +333,84 @@ pub fn PathPattern::match_path(
   path : String,
   prefix : Bool,
 ) -> Array[(String, String)]? {
-  let parts = split_path(path)
+  self.match_parts(split_path(path), prefix)
+}
+
+///|
+/// Byte-wise match for patterns with no slots or splats -- every static route,
+/// which is what most traffic hits. `split_path` would allocate a view array,
+/// one `String` per segment and the segment array just to compare a handful of
+/// bytes, so a static route is matched straight against the raw path.
+///
+/// Returns `None` when the pattern is not static (the caller then falls back
+/// to `match_parts`), otherwise whether the path matched.
+pub fn PathPattern::match_static_path(
+  self : PathPattern,
+  path : String,
+  prefix : Bool,
+) -> Bool? {
+  let len = path.length()
+  let count = self.segments.length()
+  let mut at = 0
+  let mut index = 0
+  while index < count {
+    let expected = match self.segments[index] {
+      Fixed(text) => text
+      _ => return None
+    }
+    while at < len && path.unsafe_get(at).to_int() == 47 {
+      at = at + 1
+    }
+    let want = expected.length()
+    let mut matched = 0
+    while at < len && matched < want && path.unsafe_get(at).to_int() != 47 {
+      if !eq_codes_ci(
+          path.unsafe_get(at).to_int(),
+          expected.unsafe_get(matched).to_int(),
+        ) {
+        return Some(false)
+      }
+      at = at + 1
+      matched = matched + 1
+    }
+    if matched < want {
+      return Some(false)
+    }
+    if at < len && path.unsafe_get(at).to_int() != 47 {
+      return Some(false)
+    }
+    index = index + 1
+  }
+  while at < len && path.unsafe_get(at).to_int() == 47 {
+    at = at + 1
+  }
+  if !prefix && at < len {
+    return Some(false)
+  }
+  Some(true)
+}
+
+///|
+/// ASCII case-insensitive byte comparison, shared by the static fast path.
+fn eq_codes_ci(left : Int32, right : Int32) -> Bool {
+  if left == right {
+    return true
+  }
+  let lower_left = if left >= 65 && left <= 90 { left + 32 } else { left }
+  let lower_right = if right >= 65 && right <= 90 { right + 32 } else { right }
+  lower_left == lower_right
+}
+
+///|
+/// Matches against an already-split path. The dispatcher tries every layer in
+/// turn, so splitting once per request (and reusing it across layers) avoids
+/// one array plus one `String` per segment per layer, which the pipelining-16
+/// profile showed is most of the chain's remaining allocation.
+pub fn PathPattern::match_parts(
+  self : PathPattern,
+  parts : Array[String],
+  prefix : Bool,
+) -> Array[(String, String)]? {
   let params : Array[(String, String)] = []
   let mut pi = 0
   let mut si = 0
