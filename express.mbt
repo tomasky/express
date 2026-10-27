@@ -1895,8 +1895,7 @@ pub fn escape_html(value : String) -> String {
 
 ///|
 fn Res::write_head(self : Res) -> Unit {
-  let line = self.status_code.to_string() + " " + status_text(self.status_code)
-  let status_bytes = utf8_bytes(line)
+  let status_bytes = status_line_bytes(self.status_code)
   uwb_res_write_status(
     self.uws_res,
     self.ssl_flag(),
@@ -3116,6 +3115,33 @@ let g_no_params : Array[(String, String)] = []
 /// Shared zero-length body for requests that never carry one. `body_bytes` is
 /// only ever replaced, never written through, so one instance is enough.
 let g_empty_bytes : Bytes = Bytes::make(0, b'\x00')
+
+///|
+/// Encoded status lines, keyed by status code. Building `"200 OK"` with
+/// `to_string`, string concatenation and `utf8_bytes` allocated three times per
+/// response to produce the same dozen bytes every time; a handful of codes
+/// covers real traffic, and the table is capped so an exotic code cannot grow
+/// it without bound.
+let g_status_line_memo : Array[(Int32, Bytes)] = []
+
+///|
+/// The `"<code> <text>"` status line as UTF-8 bytes, cached per status code.
+fn status_line_bytes(code : Int32) -> Bytes {
+  let mut index = 0
+  while index < g_status_line_memo.length() {
+    let entry = g_status_line_memo[index]
+    if entry.0 == code {
+      return entry.1
+    }
+    index = index + 1
+  }
+  let line = code.to_string() + " " + status_text(code)
+  let bytes = utf8_bytes(line)
+  if g_status_line_memo.length() < 32 {
+    g_status_line_memo.push((code, bytes))
+  }
+  bytes
+}
 
 ///|
 /// Whether every character is an ASCII uppercase letter, without allocating.
