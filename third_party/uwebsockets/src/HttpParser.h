@@ -302,23 +302,23 @@ private:
 
     /* Puts method as key, target as value and returns non-null (or nullptr on error). */
     static inline char *consumeRequestLine(char *data, char *end, HttpRequest::Header &header) {
-        /* Scan until single SP, assume next is / (origin request) */
+        /* Scan until single SP, assume next is / (origin request), or * for OPTIONS (asterisk form) */
         char *start = data;
         /* This catches the post padded CR and fails */
         while (data[0] > 32) data++;
         if (&data[1] == end) [[unlikely]] {
             return nullptr;
         }
-        if (data[0] == 32 && data[1] == '/') [[likely]] {
+        if (data[0] == 32 && (data[1] == '/' || (data[1] == '*' && data[2] == 32 && data - start == 7 && !memcmp(start, "OPTIONS", 7)))) [[likely]] {
             header.key = {start, (size_t) (data - start)};
             data++;
-            /* Scan for less than 33 (catches post padded CR and fails) */
+            /* Scan for less than 33 (catches post padded CR and fails) or more than 126 (not ASCII, fails) */
             start = data;
             for (; true; data += 8) {
                 uint64_t word;
                 memcpy(&word, data, sizeof(uint64_t));
-                if (hasLess(word, 33)) {
-                    while (*(unsigned char *)data > 32) data++;
+                if (hasLess(word, 33) | hasMore(word, 126)) {
+                    while (*(unsigned char *)data > 32 && *(unsigned char *)data < 127) data++;
                     /* Now we stand on space */
                     header.value = {start, (size_t) (data - start)};
                     /* Check that the following is http 1.1 */
@@ -484,7 +484,7 @@ private:
     bool isInvalidHost(std::string_view host) {
         for (char c : host) {
             unsigned char uc = static_cast<unsigned char>(c);
-            if (uc < 33 || c == ',' || c == '@') {
+            if (uc < 33 || c == ',' || c == '@' || c == '/' || c == '?' || c == '#') {
                 return true; // Invalid character found
             }
         }
@@ -610,7 +610,7 @@ private:
                 if (!CONSUME_MINIMALLY) {
                     /* Go ahead and parse it (todo: better heuristics for emitting FIN to the app level) */
                     std::string_view dataToConsume(data, length);
-                    for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes)) {
+                    for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes, true)) {
                         dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
                     }
                     if (isParsingInvalidChunkedEncoding(remainingStreamingBytes)) {
@@ -672,7 +672,7 @@ public:
             /* It's either chunked or with a content-length */
             if (isParsingChunkedEncoding(remainingStreamingBytes)) {
                 std::string_view dataToConsume(data, length);
-                for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes)) {
+                for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes, true)) {
                     /* If we got the zero size chunk, maxRemainingBodyLength is 0, else it is practically infinity */
                     dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
                 }
@@ -730,7 +730,7 @@ public:
                     /* It's either chunked or with a content-length */
                     if (isParsingChunkedEncoding(remainingStreamingBytes)) {
                         std::string_view dataToConsume(data, length);
-                        for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes)) {
+                        for (auto chunk : uWS::ChunkIterator(&dataToConsume, &remainingStreamingBytes, true)) {
                             dataHandler(user, chunk, chunk.length() ? UINT64_MAX : 0);
                         }
                         if (isParsingInvalidChunkedEncoding(remainingStreamingBytes)) {

@@ -1149,7 +1149,29 @@ pub fn Res::status(self : Res, code : Int32) -> Res {
 }
 
 ///|
+/// Rejects CR, LF and NUL. Header bytes are written to the connection
+/// verbatim (`uWS::HttpResponse::writeHeader` does no escaping), so a value
+/// carrying a CRLF would end the header block and let the caller inject a
+/// body or a whole extra response. NUL is refused for the same reason as in
+/// the static file guard: the C side is string-based.
+fn has_header_breakout(text : String) -> Bool {
+  for ch in text {
+    let code = ch.to_int()
+    if code == 13 || code == 10 || code == 0 {
+      return true
+    }
+  }
+  false
+}
+
+///|
+/// Sets a response header. Names and values containing CR, LF or NUL are
+/// dropped rather than written, so an attacker-controlled value cannot split
+/// the response.
 pub fn Res::set(self : Res, name : String, value : String) -> Res {
+  if has_header_breakout(name) || has_header_breakout(value) {
+    return self
+  }
   let value = if eq_header_name(name, "content-type") {
     mime_content_type(value)
   } else {
@@ -1778,7 +1800,13 @@ fn Res::set_cookie(
     sb.write_string("; SameSite=")
     sb.write_string(same_site)
   }
-  self.headers.push(("Set-Cookie", sb.to_string()))
+  let line = sb.to_string()
+  // `domain`, `path`, `expires` and `same_site` are caller-supplied and are
+  // spliced in unencoded, so a CRLF in any of them would forge a header.
+  if has_header_breakout(line) {
+    return self
+  }
+  self.headers.push(("Set-Cookie", line))
   self
 }
 
@@ -1936,7 +1964,12 @@ pub fn Res::locals(self : Res) -> Map[String, String] {
 
 ///|
 /// Appends a response header (allows multiple values for the same header).
+/// Appends a response header (allows multiple values for the same header).
+/// CR, LF and NUL are dropped, as in `Res::set`.
 pub fn Res::append(self : Res, name : String, value : String) -> Res {
+  if has_header_breakout(name) || has_header_breakout(value) {
+    return self
+  }
   self.headers.push((name, value))
   self
 }

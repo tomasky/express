@@ -11,7 +11,7 @@
 
 name = "kupas/express"
 
-version = "0.4.0"
+version = "0.5.1"
 
 readme = "README.mbt.md"
 

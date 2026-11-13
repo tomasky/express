@@ -22,17 +22,17 @@ Routes served by every server:
 > pipelining 1 they are capped by the load generator and the loop-back round
 > trip, not by the servers. The stable comparison is CPU per request.
 
-- At pipelining 1 all three servers land in a **17,735-28,358 req/s**
+- At pipelining 1 all three servers land in a **17,735-35,973 req/s**
   band, because that column is capped by the load generator and the
   loop-back round trip (the bare C++ handler reports its req/s while
   burning only 6-9% of one core). It does **not** rank the servers; see
   *Throughput* below.
 - Throughput, measured with `bench/loadgen.c` (C client, server on one
   core, client on the other, 64 connections): with one request in
-  flight express serves **54,196 req/s**, moonbitlang/async
-  **42,960** and bare C++ uWebSockets **74,295** (1.3x and 1.4x express). With 16 in
-  flight: express **155,026**, async **55,664**, bare C++
-  **825,144** (2.8x and 5.3x
+  flight express serves **157,366 req/s**, moonbitlang/async
+  **75,305** and bare C++ uWebSockets **136,532** (2.1x and 0.9x express). With 16 in
+  flight: express **521,620**, async **104,243**, bare C++
+  **1,361,859** (5.0x and 2.6x
   express). In throughput the gap to native is a factor of a few; per
   request of server CPU it is larger, because batching removes the
   engine's syscall cost but not the framework's. Express beats
@@ -54,19 +54,19 @@ Routes served by every server:
 
 | Server | Route | Req/s (median) | Range | Latency mean | p50 | p99 | Throughput |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| express (uWebSockets + MoonBit framework) | `/text` | 20,478 | 18,510-21,413 | 1.93 ms | 1.00 ms | 12.00 ms | 3.8 MB/s |
-| express (uWebSockets + MoonBit framework) | `/json` | 21,512 | 20,290-23,960 | 1.82 ms | 1.00 ms | 12.00 ms | 4.7 MB/s |
-| moonbitlang/async (pure MoonBit HTTP server) | `/text` | 28,358 | 15,818-35,973 | 1.24 ms | 1.00 ms | 11.00 ms | 2.6 MB/s |
-| moonbitlang/async (pure MoonBit HTTP server) | `/json` | 24,234 | 16,388-25,260 | 1.54 ms | 1.00 ms | 15.00 ms | 3.0 MB/s |
-| raw uWebSockets (C++ handler, no framework) _(diagnostic)_ | `/text` | 17,735 | 17,722-18,014 | 2.34 ms | 2.00 ms | 13.00 ms | 1.9 MB/s |
-| raw uWebSockets (C++ handler, no framework) _(diagnostic)_ | `/json` | 17,534 | 16,957-17,614 | 2.37 ms | 2.00 ms | 15.00 ms | 3.1 MB/s |
+| express (uWebSockets + MoonBit framework) | `/text` | 20,478 | 18,510-38,514 | 1.93 ms | 1.00 ms | 11.00 ms | 3.8 MB/s |
+| express (uWebSockets + MoonBit framework) | `/json` | 23,960 | 21,512-37,256 | 1.57 ms | 1.00 ms | 11.00 ms | 5.2 MB/s |
+| moonbitlang/async (pure MoonBit HTTP server) | `/text` | 35,973 | 15,818-62,790 | 0.87 ms | 0.00 ms | 8.00 ms | 3.3 MB/s |
+| moonbitlang/async (pure MoonBit HTTP server) | `/json` | 25,260 | 16,388-58,541 | 1.47 ms | 1.00 ms | 11.00 ms | 3.1 MB/s |
+| raw uWebSockets (C++ handler, no framework) _(diagnostic)_ | `/text` | 17,735 | 17,722-40,994 | 2.34 ms | 2.00 ms | 12.00 ms | 1.9 MB/s |
+| raw uWebSockets (C++ handler, no framework) _(diagnostic)_ | `/json` | 17,534 | 16,957-42,966 | 2.37 ms | 1.00 ms | 15.00 ms | 3.1 MB/s |
 
 ### Ratios
 
 | Route | express | moonbitlang/async | async / express | raw uWS | raw / express |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `/text` | 20,478 | 28,358 | 1.38x | 17,735 | 0.87x |
-| `/json` | 21,512 | 24,234 | 1.13x | 17,534 | 0.82x |
+| `/text` | 20,478 | 35,973 | 1.76x | 17,735 | 0.87x |
+| `/json` | 23,960 | 25,260 | 1.05x | 17,534 | 0.73x |
 
 ## Throughput: what the req/s column can and cannot tell you
 
@@ -86,37 +86,37 @@ the rounds of this run:
 
 | Server | 1 in flight | CPU/req | 16 in flight | CPU/req |
 | --- | ---: | ---: | ---: | ---: |
-| express | 54,196 req/s | 11.8 us | 155,026 req/s | 4.66 us |
-| moonbitlang/async | 42,960 req/s | 16.2 us | 55,664 req/s | 13.38 us |
-| raw uWebSockets | 74,295 req/s | 2.8 us | 825,144 req/s | 0.25 us |
+| express | 157,366 req/s | 25.4 us | 521,620 req/s | 3.07 us |
+| moonbitlang/async | 75,305 req/s | 53.1 us | 104,243 req/s | 12.27 us |
+| raw uWebSockets | 136,532 req/s | 29.3 us | 1,361,859 req/s | 1.17 us |
 
 This table is a snapshot of that run. The later optimization rounds are
 measured as paired A/B rounds against the previous build (section *Third
 round* below) and are therefore **not** reflected in these rows: express
-is at ~2.5 µs per request at 16 in flight today, not 4.66.
+is at ~3.0 µs per request at 16 in flight today, not 4.66.
 
 Read the two columns separately, because they answer different questions:
 
 - **One request at a time** (a browser, or a proxy without pipelining):
-  express 54,196 req/s vs async 42,960 (**1.3x**)
-  and raw 74,295 (**1.4x** express). At this
+  express 157,366 req/s vs async 75,305 (**2.1x**)
+  and raw 136,532 (**0.9x** express). At this
   concurrency the client itself is partly round-trip bound: raw reports
   its req/s while using only ~20% of a core, so read **CPU/req** here,
-  not req/s (11.8 us express, 16.2 us async, 2.81 us raw).
-- **16 requests in flight**: express 155,026 req/s, async
-  55,664 (**2.8x**), raw 825,144
-  (**5.3x** express). µWebSockets coalesces the write-back
-  of pipelined responses, so express drops from ~11.8 us to ~4.7 us
-  per request while the async server barely improves (16.2 -> 13.4 us):
+  not req/s (25.4 us express, 53.1 us async, 29.30 us raw).
+- **16 requests in flight**: express 521,620 req/s, async
+  104,243 (**5.0x**), raw 1,361,859
+  (**2.6x** express). µWebSockets coalesces the write-back
+  of pipelined responses, so express drops from ~25.4 us to ~3.1 us
+  per request while the async server barely improves (53.1 -> 12.3 us):
   it answers pipelined requests one at a time. That is an engine property,
   not something the framework layer can change. raw is still client-capped
-  here (~24% of a core at 825,144 req/s), so its true ceiling is higher.
+  here (~96% of a core at 1,361,859 req/s), so its true ceiling is higher.
 
 So *how much faster is native* has two honest answers. **In throughput**:
-about 1.4x with one request in flight and 5.3x with 16, both
-limited by the client. **In server CPU per request**: 4.2x and 18.6x --
+about 0.9x with one request in flight and 2.6x with 16, both
+limited by the client. **In server CPU per request**: 0.9x and 2.6x --
 the second is larger because batching makes the engine's syscall cost
-vanish while the framework's ~4.7 us of MoonBit work per request does
+vanish while the framework's ~3.1 us of MoonBit work per request does
 not. That per-request MoonBit work is what the next round targets.
 
 Express is faster than MoonBit's own HTTP server in both columns, in
@@ -403,7 +403,7 @@ whole table on every miss -- so it was dropped rather than kept on a
 favourable first reading.
 
 Cumulative, this build versus the one before the pipelining-16 work:
-**4.70 -> ~2.5 µs CPU per request** (~1.9x) for the same 188-byte response,
+**4.70 -> ~3.0 µs CPU per request** (~1.6x) for the same 188-byte response,
 with the wire format unchanged throughout. Measured directly in one
 session against the build that closed the previous campaign (`182d282`):
 3.72 -> 2.48 µs, -33%, faster in 3 of 3 rounds.
@@ -518,20 +518,20 @@ count precisely because the magnitude alone was not conclusive.
 
 ## Method
 
-- Tool: [autocannon](https://github.com/mcollina/autocannon) `autocannon v8.0.0`
+- Tool: [autocannon](https://github.com/mcollina/autocannon) `autocannon v9.0.0`
 - Connections: `50`, pipelining: `1`, duration: `5s` per run
 - Each target is warmed up for 3 s, then measured 3x; the table reports the **median**, with the min-max range of the runs.
 - Runs are **serial**: one server process and one API under load at a time, so no two benchmarks overlap. Targets are rotated every round so slow drift in host load hits all three equally.
 - express and moonbitlang/async binaries are built with `moon build --release`; the raw baseline is built with `g++ -O3` and the same TLS flags as the express stub.
 - All runs had 0 errors and 0 non-2xx responses.
-- Date: 2026-10-27 11:41 UTC
+- Date: 2026-11-13 06:50 UTC
 
 ## Machine
 
 - CPU: AMD EPYC 9655P 96-Core Processor
 - vCPUs visible: 2
-- Memory: 2.2 GiB
-- OS: Linux-6.18.46-railway-x86_64-with-glibc2.43
+- Memory: 2.0 GiB
+- OS: Linux-6.18.60-railway-x86_64-with-glibc2.43
 
 > The load generator runs on the same VM as the servers, so on this 2-vCPU
 > box the client and server share two cores. Absolute numbers are noisy; the

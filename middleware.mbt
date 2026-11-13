@@ -312,7 +312,20 @@ fn parse_content_length(value : String) -> Int32 {
 }
 
 ///|
+/// Rejects a decoded URL path that could escape the document root.
+///
+/// The path reaches C as a NUL-terminated string (`::stat`/`std::fopen` on
+/// `c_str()`), so a `%00` would silently truncate it and turn
+/// `/public/secret%00.txt` into `/public/secret`. Backslash is also rejected:
+/// it is not a separator here, but it is one on Windows, so `..\..\x` would
+/// otherwise slip past the segment check.
 fn is_unsafe_path(path : String) -> Bool {
+  if path.contains("\u{0}") {
+    return true
+  }
+  if path.contains("\\") {
+    return true
+  }
   for segment in split_path(path) {
     if segment == ".." {
       return true
